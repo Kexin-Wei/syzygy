@@ -9,6 +9,20 @@ export type Entry =
   | { id: string; kind: "tools"; who: "main" | "subagent"; items: ToolCall[] }
   | { id: string; kind: "system"; text: string };
 
+/** Your messages: a shaded block with a cyan bar, so they stand apart from the agents' plain text. */
+export function UserMessage({ text, attachments }: { text: string; attachments?: string[] }) {
+  return (
+    <Box marginTop={1} flexDirection="column" borderStyle="bold" borderTop={false} borderRight={false} borderBottom={false} borderColor="cyan" backgroundColor="blackBright" paddingX={1}>
+      <Text>{text}</Text>
+      {attachments?.map((a) => (
+        <Text key={a} dimColor>
+          📎 {a}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
 export interface ToolCall {
   name: string;
   detail: string;
@@ -21,16 +35,33 @@ export function toolCounts(items: ToolCall[]): string {
   return [...counts].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(", ");
 }
 
-/** Folded: one line per run of tool calls. Expanded (Ctrl+O): every call with its full command. */
+/** Folded rows per group: the first ones in the transcript, the latest ones while still running. */
+const FOLDED_ROWS = { done: 12, live: 6 };
+
+/** Folded: one truncated line per call. Expanded (Ctrl+O): every call with its full command. */
 export function ToolGroup({ items, expanded, indent = "  ", live = false }: { items: ToolCall[]; expanded: boolean; indent?: string; live?: boolean }) {
   if (!items.length) return null;
-  const one = (t: ToolCall) => `${t.name} ${t.detail.replace(/\s+/g, " ")}`;
   if (!expanded) {
-    const last = items.at(-1)!;
+    const max = live ? FOLDED_ROWS.live : FOLDED_ROWS.done;
+    const shown = items.length <= max ? items : live ? items.slice(-max) : items.slice(0, max);
+    const hidden = items.length - shown.length;
     return (
-      <Text dimColor wrap="truncate-end">
-        {indent}⚙ {items.length === 1 ? one(last) : `${items.length} tool calls · ${toolCounts(items)}${live ? ` · ${one(last)}` : ""}`}
-      </Text>
+      <Box flexDirection="column">
+        {items.length > 1 ? (
+          <Text dimColor>
+            {indent}⚙ {items.length} tool calls · {toolCounts(items)}
+          </Text>
+        ) : null}
+        {live && hidden ? <Text dimColor>{indent}  … {hidden} earlier</Text> : null}
+        {shown.map((t, i) => (
+          <Text key={i} dimColor wrap="truncate-end">
+            {indent}
+            {items.length > 1 ? "  " : "⚙ "}
+            <Text bold>{t.name}</Text> {t.detail.replace(/\s+/g, " ")}
+          </Text>
+        ))}
+        {!live && hidden ? <Text dimColor>{indent}  … {hidden} more · Ctrl+O to expand</Text> : null}
+      </Box>
     );
   }
   return (
@@ -52,20 +83,7 @@ export function ToolGroup({ items, expanded, indent = "  ", live = false }: { it
 function EntryView({ e, expanded }: { e: Entry; expanded: boolean }) {
   switch (e.kind) {
     case "user":
-      return (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="cyan" bold>
-            › you
-          </Text>
-          <Text>{e.text}</Text>
-          {e.attachments?.map((a) => (
-            <Text key={a} dimColor>
-              {"  📎 "}
-              {a}
-            </Text>
-          ))}
-        </Box>
-      );
+      return <UserMessage text={e.text} attachments={e.attachments} />;
     case "assistant":
       return (
         <Box flexDirection="column" marginTop={1}>
@@ -74,7 +92,9 @@ function EntryView({ e, expanded }: { e: Entry; expanded: boolean }) {
             {e.model ? <Text dimColor> {e.model}</Text> : null}
             {e.status && e.status !== "completed" ? <Text color="red"> [{e.status}]</Text> : null}
           </Text>
-          <Text>{e.text}</Text>
+          <Box paddingLeft={2}>
+            <Text>{e.text}</Text>
+          </Box>
         </Box>
       );
     case "subagent":

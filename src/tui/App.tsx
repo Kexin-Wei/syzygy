@@ -434,7 +434,9 @@ export function App({ core }: { core: Core }) {
           <Text color={PROVIDER_COLOR[session.mainProvider]} bold>
             ◆ {session.mainProvider}
           </Text>
-          <Text>{streaming}</Text>
+          <Box paddingLeft={2}>
+            <Text>{streaming}</Text>
+          </Box>
         </Box>
       ) : null}
       {showSubs ? <SubPanel subs={liveSubs} expanded={expanded} /> : liveSubs.length ? <Text color="magenta">↳ {liveSubs.length} subagent(s) working (Tab to show)</Text> : null}

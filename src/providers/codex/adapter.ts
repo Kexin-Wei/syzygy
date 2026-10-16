@@ -133,6 +133,8 @@ class CodexSession implements AgentSession {
       if (p?.threadId !== this.sessionId) return;
       if (method === "item/agentMessage/delta") q.push({ kind: "text-delta", text: p.delta });
       else if (method === "item/started" || method === "item/completed") {
+        // separate consecutive agent messages in the streamed text (e.g. a progress note, then the answer)
+        if (method === "item/started" && p.item.type === "agentMessage" && messages.length) q.push({ kind: "text-delta", text: "\n\n" });
         if (method === "item/completed" && p.item.type === "agentMessage") messages.push(p.item.text);
         const d = describeItem(p.item);
         if (d) q.push({ kind: "tool", ...d, status: method === "item/started" ? "started" : "completed" });

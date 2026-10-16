@@ -86,24 +86,29 @@ test("@name finds files in nested folders", async () => {
   unmount();
 });
 
-test("tool calls fold into one line; Ctrl+O shows every command", async () => {
+test("tool calls fold to one line each; Ctrl+O shows full commands", async () => {
   const { core } = fakeCore();
   const { lastFrame, frames, stdin, unmount } = render(<App core={core} />);
   await tick();
   const ee = core as unknown as EventEmitter;
-  for (const cmd of ["git status", "gh pr view 35", "git fetch origin"]) ee.emit("main", { kind: "tool", name: "Bash", detail: cmd, status: "started" });
-  ee.emit("main", { kind: "tool", name: "Read", detail: "/repo/AGENTS.md", status: "started" });
+  const tool = (name: string, detail: string) => ee.emit("main", { kind: "tool", name, detail, status: "started" });
+  tool("Bash", "git status\necho second-line");
+  for (let i = 1; i <= 13; i++) tool("Bash", `step ${i}`);
+  tool("Read", "/repo/AGENTS.md");
   await tick();
-  expect(lastFrame()).toContain("4 tool calls · Bash ×3, Read · Read /repo/AGENTS.md"); // live line shows the latest call
+  // live: header plus the latest calls
+  expect(lastFrame()).toContain("15 tool calls · Bash ×14, Read");
+  expect(lastFrame()).toContain("… 9 earlier");
+  expect(lastFrame()).toContain("Read /repo/AGENTS.md");
   ee.emit("main", { kind: "turn-complete", text: "done", status: "completed" });
   await tick();
   const folded = frames.join("\n");
-  expect(folded).toContain("4 tool calls · Bash ×3, Read");
-  expect(folded).not.toContain("gh pr view 35");
+  expect(folded).toContain("Bash git status echo second-line"); // one line per call
+  expect(folded).toContain("… 3 more · Ctrl+O to expand");
   await type(stdin, "\x0f"); // Ctrl+O
   const expanded = frames.join("\n");
-  expect(expanded).toContain("gh pr view 35");
-  expect(expanded).toContain("/repo/AGENTS.md");
+  expect(expanded).toMatch(/git status\n\s+echo second-line/); // full multi-line command
+  expect(expanded).toContain("step 13");
   unmount();
 });
 

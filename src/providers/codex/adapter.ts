@@ -1,5 +1,6 @@
 import { AsyncQueue } from "../../core/queue.ts";
 import type {
+  AccountUsage,
   AgentEvent,
   AgentSession,
   ApprovalHandler,
@@ -8,7 +9,10 @@ import type {
   SessionOptions,
   UserInput,
 } from "../../core/types.ts";
+import type { GetAccountRateLimitsResponse } from "../../protocol/codex/v2/GetAccountRateLimitsResponse.ts";
 import type { ModelListResponse } from "../../protocol/codex/v2/ModelListResponse.ts";
+import type { RateLimitSnapshot } from "../../protocol/codex/v2/RateLimitSnapshot.ts";
+import type { RateLimitWindow } from "../../protocol/codex/v2/RateLimitWindow.ts";
 import type { ThreadStartResponse } from "../../protocol/codex/v2/ThreadStartResponse.ts";
 import type { UserInput as CodexUserInput } from "../../protocol/codex/v2/UserInput.ts";
 import { CodexRpc, EXIT_METHOD } from "./rpc.ts";
@@ -68,6 +72,15 @@ export function unwrapShell(command: string): string {
   return out;
 }
 
+/** Codex rate-limit snapshot → percent used of the short (5h) and long (weekly) windows. */
+export function codexUsage(s: RateLimitSnapshot | null | undefined, at = Date.now()): AccountUsage | null {
+  const windows = [s?.primary, s?.secondary].filter((w): w is RateLimitWindow => !!w);
+  if (!windows.length) return null;
+  const short = windows.find((w) => (w.windowDurationMins ?? 300) <= 6 * 60);
+  const long = windows.find((w) => (w.windowDurationMins ?? 0) > 6 * 60);
+  return { fiveHour: short?.usedPercent ?? null, weekly: long?.usedPercent ?? null, at };
+}
+
 function describeItem(item: any): { name: string; detail: string } | undefined {
   switch (item.type) {
     case "commandExecution":
@@ -119,12 +132,6 @@ class CodexSession implements AgentSession {
       if (method === EXIT_METHOD) return finish({ kind: "turn-complete", text: messages.at(-1) ?? "", status: "failed", error: p.message });
       if (p?.threadId !== this.sessionId) return;
       if (method === "item/agentMessage/delta") q.push({ kind: "text-delta", text: p.delta });
-      else if (method === "thread/tokenUsage/updated") {
-        // `last` is the latest model response; summing them gives this turn's usage
-        const l = p.tokenUsage?.last;
-        const tokens = l ? l.inputTokens + l.outputTokens : 0; // inputTokens already includes cached
-        if (tokens > 0) q.push({ kind: "usage", tokens });
-      }
       else if (method === "item/started" || method === "item/completed") {
         if (method === "item/completed" && p.item.type === "agentMessage") messages.push(p.item.text);
         const d = describeItem(p.item);
@@ -201,6 +208,11 @@ export class CodexAdapter implements ProviderAdapter {
 
   alive(): boolean {
     return !this.rpc.exited;
+  }
+
+  async readUsage(): Promise<AccountUsage | null> {
+    const r: GetAccountRateLimitsResponse = await this.rpc.request("account/rateLimits/read", { excludeResetCreditDetails: true });
+    return codexUsage(r.rateLimitsByLimitId?.codex ?? r.rateLimits);
   }
 
   async listModels(): Promise<ModelInfo[]> {

@@ -34,7 +34,10 @@ if (mi >= 0) {
 }
 
 const core = new Core();
+// fresh numbers before balancing picks the main agent, but never hold up startup for long
+await Promise.race([core.refreshUsage().catch(() => {}), Bun.sleep(3000)]);
 await core.openProject(args[0] ?? process.cwd(), { resume });
+core.startUsagePolling();
 if (main && main !== core.session.mainProvider) {
   await core.updateSettings({ mainProvider: main }, "project");
   await core.newSession(main);

@@ -3,31 +3,34 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../store/db.ts";
-import { Core, formatTokens, pickMain, usageNote } from "./core.ts";
+import { Core, formatPct, pickMain, usageNote } from "./core.ts";
 
-test("formats token counts", () => {
-  expect(formatTokens(950)).toBe("950");
-  expect(formatTokens(12_400)).toBe("12k");
-  expect(formatTokens(1_250_000)).toBe("1.3M");
+const u = (fiveHour: number | null, weekly: number | null = null) => ({ fiveHour, weekly, at: 0 });
+
+test("formats percentages", () => {
+  expect(formatPct(17.4)).toBe("17%");
+  expect(formatPct(null)).toBe("?");
 });
 
-test("usage note names both agents", () => {
-  expect(usageNote("codex", "claude", { codex: 2_000_000, claude: 1_500_000 })).toBe(
-    "[syzygy] tokens used in the last 5h: Codex (you) 2.0M, Claude Code (subagent) 1.5M.",
+test("usage note shows 5h and weekly limits for both agents", () => {
+  expect(usageNote("codex", "claude", { codex: u(40, 22), claude: u(30, 39) })).toBe(
+    "[syzygy] subscription usage (5h / weekly limit): Codex (you) 40% / 22%, Claude Code (subagent) 30% / 39%.",
   );
+  expect(usageNote("codex", "claude", { codex: u(40), claude: null })).toContain("Claude Code (subagent) ? / ?");
 });
 
-test("picks the less-used provider as main once usage matters", () => {
-  expect(pickMain({ codex: 1_100_000, claude: 0 }, "codex")).toBe("claude");
-  expect(pickMain({ codex: 200_000, claude: 900_000 }, "claude")).toBe("codex");
-  expect(pickMain({ codex: 50_000, claude: 0 }, "codex")).toBe("codex"); // below the floor
+test("picks the provider using less of its 5h limit once usage matters", () => {
+  expect(pickMain({ codex: u(46), claude: u(17) }, "codex")).toBe("claude");
+  expect(pickMain({ codex: u(12), claude: u(60) }, "claude")).toBe("codex");
+  expect(pickMain({ codex: u(8), claude: u(1) }, "codex")).toBe("codex"); // below the floor
+  expect(pickMain({ codex: u(80), claude: null }, "codex")).toBe("codex"); // unknown: keep the default
 });
 
 test("note turns into a rule past a 2x gap", () => {
-  expect(usageNote("codex", "claude", { codex: 1_100_000, claude: 0 })).toContain("delegate every multi-step part");
-  expect(usageNote("codex", "claude", { codex: 0, claude: 400_000 })).toContain("do the work yourself");
-  expect(usageNote("codex", "claude", { codex: 300_000, claude: 200_000 })).not.toContain("Rule");
-  expect(usageNote("codex", "claude", { codex: 60_000, claude: 0 })).not.toContain("Rule"); // below the floor
+  expect(usageNote("codex", "claude", { codex: u(46), claude: u(17) })).toContain("delegate every multi-step part");
+  expect(usageNote("codex", "claude", { codex: u(10), claude: u(40) })).toContain("do the work yourself");
+  expect(usageNote("codex", "claude", { codex: u(30), claude: u(20) })).not.toContain("Rule");
+  expect(usageNote("codex", "claude", { codex: u(6), claude: u(0) })).not.toContain("Rule"); // below the floor
 });
 
 test("startup opens a new chat unless resuming; untouched chats are reused", async () => {

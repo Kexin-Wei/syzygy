@@ -1,13 +1,13 @@
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
-import { ClaudeAdapter } from "../providers/claude/adapter.ts";
+import { ClaudeAdapter, describeClaudeTool } from "../providers/claude/adapter.ts";
 import { CodexAdapter } from "../providers/codex/adapter.ts";
 import { DATA_DIR, type Project, type SessionRow, type Settings, Store, type SubtaskRow } from "../store/db.ts";
 import { Bridge } from "./bridge.ts";
 import { attachmentFor, pasteClipboardImage } from "./input.ts";
 import { appendMemory, memoryBlock } from "./memory.ts";
 import { resolveIntent } from "./models.ts";
-import type { AgentEvent, AgentSession, ApprovalRequest, ModelInfo, ModelIntent, ProviderAdapter, ProviderId, ResolvedModel, UserInput } from "./types.ts";
+import type { AccountUsage, AgentEvent, AgentSession, ApprovalRequest, ModelInfo, ModelIntent, ProviderAdapter, ProviderId, ResolvedModel, UserInput } from "./types.ts";
 
 export interface PendingApproval extends Omit<ApprovalRequest, "signal"> {
   id: string;
@@ -24,7 +24,7 @@ export interface CoreEvents {
   status: [string];
   session: [SessionRow];
   busy: [boolean];
-  usage: [Record<ProviderId, number>];
+  usage: [Usage];
 }
 
 type ToolResult = { text: string; isError?: boolean };
@@ -32,30 +32,39 @@ type ToolResult = { text: string; isError?: boolean };
 const PROVIDER_NAME: Record<ProviderId, string> = { codex: "Codex", claude: "Claude Code" };
 const CLAUDE_FAMILIES = /^(opus|sonnet|haiku|fable|claude-)/i;
 
-/** Subscription limits reset on rolling windows; balance over the same span. */
-export const USAGE_WINDOW_MS = 5 * 60 * 60 * 1000;
+export type Usage = Record<ProviderId, AccountUsage | null>;
 
-export function formatTokens(n: number): string {
-  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
-}
-
-/** Per-turn note that lets the main agent weigh doing work itself against delegating. */
-/** Below this, usage is too small to act on. */
-export const BALANCE_FLOOR = 100_000;
+/** How often each provider's account usage is re-read: codex has a free endpoint, claude needs a tiny request. */
+export const USAGE_MAX_AGE_MS: Record<ProviderId, number> = { codex: 5 * 60_000, claude: 15 * 60_000 };
+/** Below this share of the 5h limit, usage is too small to act on. */
+export const BALANCE_FLOOR = 10;
 /** One side at this multiple of the other turns the suggestion into a rule. */
 export const BALANCE_RATIO = 2;
 
-/** The provider with less usage, once usage is large enough to matter; otherwise `fallback`. */
-export function pickMain(usage: Record<ProviderId, number>, fallback: ProviderId): ProviderId {
-  if (Math.max(usage.codex, usage.claude) < BALANCE_FLOOR || usage.codex === usage.claude) return fallback;
-  return usage.codex < usage.claude ? "codex" : "claude";
+export function formatPct(n: number | null | undefined): string {
+  return n == null ? "?" : `${Math.round(n)}%`;
+}
+
+/** 5h-window usage, the window the balancing acts on */
+const level = (u: AccountUsage | null) => u?.fiveHour ?? null;
+
+/** The provider using less of its 5h limit, once that matters; otherwise `fallback`. */
+export function pickMain(usage: Usage, fallback: ProviderId): ProviderId {
+  const a = level(usage.codex);
+  const b = level(usage.claude);
+  if (a == null || b == null || Math.max(a, b) < BALANCE_FLOOR || a === b) return fallback;
+  return a < b ? "codex" : "claude";
 }
 
 /** Per-turn note that lets the main agent weigh doing work itself against delegating. */
-export function usageNote(main: ProviderId, sub: ProviderId, usage: Record<ProviderId, number>): string {
-  const note = `[syzygy] tokens used in the last 5h: ${PROVIDER_NAME[main]} (you) ${formatTokens(usage[main])}, ${PROVIDER_NAME[sub]} (subagent) ${formatTokens(usage[sub])}.`;
-  const [hi, lo] = usage[main] >= usage[sub] ? [main, sub] : [sub, main];
-  if (usage[hi] < BALANCE_FLOOR || usage[hi] < BALANCE_RATIO * usage[lo]) return note;
+export function usageNote(main: ProviderId, sub: ProviderId, usage: Usage): string {
+  const show = (p: ProviderId) => `${formatPct(usage[p]?.fiveHour)} / ${formatPct(usage[p]?.weekly)}`;
+  const note = `[syzygy] subscription usage (5h / weekly limit): ${PROVIDER_NAME[main]} (you) ${show(main)}, ${PROVIDER_NAME[sub]} (subagent) ${show(sub)}.`;
+  const m = level(usage[main]);
+  const s = level(usage[sub]);
+  if (m == null || s == null) return note;
+  const [hi, hiPct, loPct] = m >= s ? [main, m, s] : [sub, s, m];
+  if (hiPct < BALANCE_FLOOR || hiPct < BALANCE_RATIO * loPct) return note;
   return hi === main
     ? `${note} Rule for this request: you are at ${BALANCE_RATIO}x or more of the subagent, so delegate every multi-step part ` +
         `(implementation, edits, scripted changes, builds, checks) and only plan, answer directly, and review its reports.`
@@ -252,7 +261,7 @@ export class Core extends EventEmitter<CoreEvents> {
       const toMain: UserInput[] = balance ? [...input, { type: "text", text: usageNote(main.provider, sub, this.usage()) }] : input;
       for await (const ev of main.send(toMain)) {
         const current = this.session.id === sid;
-        if (ev.kind === "usage") this.recordUsage(main.provider, ev.tokens);
+        if (ev.kind === "account-usage") this.setUsage(main.provider, ev.usage);
         if (ev.kind === "session" && current) this.mainResolved = { ...this.mainResolved!, model: ev.model };
         if (ev.kind === "turn-complete") {
           failed = ev.status === "failed";
@@ -274,6 +283,7 @@ export class Core extends EventEmitter<CoreEvents> {
       markDone();
       // a failed turn may mean a dead process; restart (with resume) on the next turn
       if (failed || this.restartPending) await this.dropMain();
+      void this.refreshUsage(60_000); // the turn moved the meters; codex reads are free
     }
   }
 
@@ -282,18 +292,48 @@ export class Core extends EventEmitter<CoreEvents> {
     const fallback = this.settings.mainProvider;
     if (!this.settings.balance) return fallback;
     const picked = pickMain(this.usage(), fallback);
-    if (picked !== fallback) this.emit("status", `main agent: ${picked} (less used in the last 5h; /balance off to keep ${fallback})`);
+    if (picked !== fallback) this.emit("status", `main agent: ${picked} (uses less of its 5h limit; /balance off to keep ${fallback})`);
     return picked;
   }
 
-  /** Tokens per provider over the balancing window, across all projects. */
-  usage(): Record<ProviderId, number> {
-    return this.store.usageSince(Date.now() - USAGE_WINDOW_MS);
+  /** Last known account usage per provider; stored so every syzygy window shares it. */
+  usage(): Usage {
+    return { codex: this.store.getJson<AccountUsage>("usage.codex"), claude: this.store.getJson<AccountUsage>("usage.claude") };
   }
 
-  private recordUsage(provider: ProviderId, tokens: number): void {
-    this.store.addUsage(provider, tokens);
+  private setUsage(provider: ProviderId, u: AccountUsage): void {
+    this.store.setJson(`usage.${provider}`, u);
     this.emit("usage", this.usage());
+  }
+
+  private usageReads = new Map<ProviderId, Promise<void>>();
+
+  /** Re-read each provider's account usage that is older than its max age (or `maxAgeMs` for codex, whose reads are free). */
+  async refreshUsage(codexMaxAgeMs = USAGE_MAX_AGE_MS.codex): Promise<void> {
+    const current = this.usage();
+    const due = (["codex", "claude"] as const).filter((p) => {
+      const age = Date.now() - (current[p]?.at ?? 0);
+      return age > (p === "codex" ? codexMaxAgeMs : USAGE_MAX_AGE_MS.claude) && !this.usageReads.has(p);
+    });
+    await Promise.allSettled(
+      due.map((p) => {
+        const read = (async () => {
+          const u = await (await this.adapter(p)).readUsage();
+          if (u) this.setUsage(p, u);
+        })().finally(() => this.usageReads.delete(p));
+        this.usageReads.set(p, read);
+        return read;
+      }),
+    );
+  }
+
+  private usageTimer?: ReturnType<typeof setInterval>;
+
+  /** Keep account usage fresh while syzygy runs, since the same subscriptions are used elsewhere too. */
+  startUsagePolling(): void {
+    void this.refreshUsage();
+    this.usageTimer ??= setInterval(() => void this.refreshUsage(), 60_000);
+    this.usageTimer.unref?.();
   }
 
   async interrupt(): Promise<void> {
@@ -337,7 +377,7 @@ export class Core extends EventEmitter<CoreEvents> {
         return this.followup(String(args.subagent_id), String(args.message));
       case "approve": {
         const ok = await this.askApproval(
-          { provider: "claude", kind: args.tool_name === "Edit" || args.tool_name === "Write" ? "file-change" : "command", detail: `${args.tool_name} ${JSON.stringify(args.input).slice(0, 400)}` },
+          { provider: "claude", kind: args.tool_name === "Edit" || args.tool_name === "Write" ? "file-change" : "command", detail: `${args.tool_name} ${describeClaudeTool(args.tool_name, args.input)}` },
           role === "main" ? "main" : "subagent",
         );
         return { text: JSON.stringify(ok ? { behavior: "allow", updatedInput: args.input } : { behavior: "deny", message: "The user declined this action." }) };
@@ -422,7 +462,7 @@ export class Core extends EventEmitter<CoreEvents> {
     try {
       for await (const ev of session.send(input)) {
         if (visible()) this.emit("sub", row.id, ev);
-        if (ev.kind === "usage") this.recordUsage(row.provider, ev.tokens);
+        if (ev.kind === "account-usage") this.setUsage(row.provider, ev.usage);
         if (ev.kind === "turn-complete") final = ev;
       }
     } catch (e) {
@@ -472,6 +512,7 @@ export class Core extends EventEmitter<CoreEvents> {
   }
 
   async shutdown(): Promise<void> {
+    clearInterval(this.usageTimer);
     await this.closeAgents().catch(() => {});
     for (const a of this.adapters.values()) await (await a.catch(() => undefined))?.dispose().catch(() => {});
     this.bridge.stop();

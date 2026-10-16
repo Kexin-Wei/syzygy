@@ -1,8 +1,9 @@
 import type { Subprocess } from "bun";
 import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { AsyncQueue, readLines } from "../../core/queue.ts";
 import { writePrivate } from "../../core/runtime.ts";
-import type { AgentEvent, AgentSession, ModelInfo, ProviderAdapter, SessionOptions, UserInput } from "../../core/types.ts";
+import type { AccountUsage, AgentEvent, AgentSession, ModelInfo, ProviderAdapter, SessionOptions, UserInput } from "../../core/types.ts";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 /** Aliases the Claude CLI maps to its newest model, so no list call is needed. */
@@ -13,6 +14,55 @@ const MODELS: ModelInfo[] = [
 ];
 
 const IMAGE_TYPES: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
+/** Claude `rate_limit_event` info → percent used of the 5h and weekly windows (it reports 0–1 utilization). */
+export function claudeUsage(info: any, at = Date.now()): AccountUsage | null {
+  const w = info?.unifiedWindows;
+  if (!w) return null;
+  const pct = (x: any) => (typeof x?.utilization === "number" ? Math.round(x.utilization * 1000) / 10 : null);
+  return { fiveHour: pct(w.five_hour), weekly: pct(w.seven_day), at };
+}
+
+/** One readable line per tool call: the command, path or query instead of the raw JSON input. */
+export function describeClaudeTool(name: string, input: any): string {
+  const i = input ?? {};
+  const join = (...parts: unknown[]) => parts.filter((p) => typeof p === "string" && p).join("  in ");
+  let s: string;
+  switch (name) {
+    case "Bash":
+      s = String(i.command ?? "");
+      break;
+    case "Read":
+    case "Write":
+    case "Edit":
+    case "MultiEdit":
+    case "NotebookEdit":
+      s = String(i.file_path ?? i.notebook_path ?? "");
+      break;
+    case "Grep":
+    case "Glob":
+      s = join(i.pattern, i.path);
+      break;
+    case "WebFetch":
+      s = String(i.url ?? "");
+      break;
+    case "WebSearch":
+      s = String(i.query ?? "");
+      break;
+    case "Task":
+    case "Agent":
+      s = String(i.description ?? i.prompt ?? "");
+      break;
+    case "TodoWrite":
+      s = `${(i.todos ?? []).length} todos`;
+      break;
+    default: {
+      const first = Object.values(i).find((v) => typeof v === "string");
+      s = typeof first === "string" ? first : JSON.stringify(i);
+    }
+  }
+  return s.length > 4000 ? `${s.slice(0, 4000)}…` : s;
+}
 
 async function toClaudeContent(input: UserInput[]): Promise<any[]> {
   const out: any[] = [];
@@ -115,13 +165,13 @@ class ClaudeSession implements AgentSession {
       const text = m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
       if (text) cur?.messages.push(text);
       for (const c of m.message.content) {
-        if (c.type === "tool_use") cur?.q.push({ kind: "tool", name: c.name, detail: JSON.stringify(c.input).slice(0, 200), status: "started" });
+        if (c.type === "tool_use") cur?.q.push({ kind: "tool", name: c.name, detail: describeClaudeTool(c.name, c.input), status: "started" });
       }
+    } else if (m.type === "rate_limit_event") {
+      const usage = claudeUsage(m.rate_limit_info);
+      if (usage) cur?.q.push({ kind: "account-usage", usage });
     } else if (m.type === "result") {
       if (m.session_id) this.sessionId = m.session_id;
-      const u = m.usage ?? {};
-      const tokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.output_tokens ?? 0);
-      if (tokens) cur?.q.push({ kind: "usage", tokens });
       const status = m.subtype === "success" ? "completed" : m.subtype === "error_during_execution" && m.is_error === false ? "interrupted" : "failed";
       this.finish({ status, text: typeof m.result === "string" ? m.result : undefined, ...(status === "failed" ? { error: m.subtype } : {}) });
     }
@@ -154,6 +204,29 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   async listModels(): Promise<ModelInfo[]> {
     return MODELS;
+  }
+
+  /** Claude Code reports usage only with a model response, so send the smallest one we can (haiku, no tools). */
+  async readUsage(): Promise<AccountUsage | null> {
+    const proc = Bun.spawn(["claude", "-p", "ok", "--model", "haiku", "--max-turns", "1", "--tools", "", "--output-format", "stream-json", "--verbose"], {
+      cwd: tmpdir(),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const timer = setTimeout(() => proc.kill(), 90_000);
+    try {
+      for await (const line of readLines(proc.stdout)) {
+        try {
+          const m = JSON.parse(line);
+          if (m.type === "rate_limit_event") return claudeUsage(m.rate_limit_info);
+        } catch {}
+      }
+      return null;
+    } finally {
+      clearTimeout(timer);
+      proc.kill();
+    }
   }
 
   async startSession(opts: SessionOptions): Promise<AgentSession> {

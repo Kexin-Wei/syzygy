@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
 import { Store } from "./db.ts";
 
-test("usage totals per provider within a window", () => {
+test("stores small json values", () => {
   const s = new Store(":memory:");
-  s.addUsage("codex", 100, 1000);
-  s.addUsage("codex", 50, 5000);
-  s.addUsage("claude", 70, 6000);
-  expect(s.usageSince(0)).toEqual({ codex: 150, claude: 70 });
-  expect(s.usageSince(4000)).toEqual({ codex: 50, claude: 70 });
+  expect(s.getJson("usage.codex")).toBeNull();
+  s.setJson("usage.codex", { fiveHour: 40, weekly: 22, at: 1 });
+  s.setJson("usage.codex", { fiveHour: 41, weekly: 22, at: 2 });
+  expect(s.getJson("usage.codex")).toEqual({ fiveHour: 41, weekly: 22, at: 2 });
 });
 
 test("projects, sessions, archive, transcript, settings", () => {

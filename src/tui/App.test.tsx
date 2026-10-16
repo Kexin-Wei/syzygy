@@ -24,7 +24,7 @@ function fakeCore() {
     project: { id: 1, name: "proj", path: dir },
     session: { id: "s1", projectId: 1, title: "t", mainProvider: "codex", mainSessionId: null, mainModel: null, archived: false, createdAt: 0, updatedAt: 0 },
     store: { messages: () => [] },
-    usage: () => ({ codex: 0, claude: 0 }),
+    usage: () => ({ codex: null, claude: null }),
     async updateSettings(patch: Partial<Settings>) {
       settings = { ...settings, ...patch };
     },
@@ -76,6 +76,27 @@ test("@name finds files in nested folders", async () => {
   await tick();
   await type(stdin, "see @main", KEY.tab);
   expect(lastFrame()).toContain("see @src/main.ts");
+  unmount();
+});
+
+test("tool calls fold into one line; Ctrl+O shows every command", async () => {
+  const { core } = fakeCore();
+  const { lastFrame, frames, stdin, unmount } = render(<App core={core} />);
+  await tick();
+  const ee = core as unknown as EventEmitter;
+  for (const cmd of ["git status", "gh pr view 35", "git fetch origin"]) ee.emit("main", { kind: "tool", name: "Bash", detail: cmd, status: "started" });
+  ee.emit("main", { kind: "tool", name: "Read", detail: "/repo/AGENTS.md", status: "started" });
+  await tick();
+  expect(lastFrame()).toContain("4 tool calls · Bash ×3, Read · Read /repo/AGENTS.md"); // live line shows the latest call
+  ee.emit("main", { kind: "turn-complete", text: "done", status: "completed" });
+  await tick();
+  const folded = frames.join("\n");
+  expect(folded).toContain("4 tool calls · Bash ×3, Read");
+  expect(folded).not.toContain("gh pr view 35");
+  await type(stdin, "\x0f"); // Ctrl+O
+  const expanded = frames.join("\n");
+  expect(expanded).toContain("gh pr view 35");
+  expect(expanded).toContain("/repo/AGENTS.md");
   unmount();
 });
 

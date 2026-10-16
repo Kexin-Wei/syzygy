@@ -1,7 +1,7 @@
 import { Box, Text, useApp, useInput, usePaste, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { type Core, formatTokens, type PendingApproval } from "../core/core.ts";
+import { type Core, formatPct, type PendingApproval } from "../core/core.ts";
 import { applySuggestion, parseInput, suggestPaths } from "../core/input.ts";
 import { memoryPath, readMemory } from "../core/memory.ts";
 import type { ProviderId, UserInput } from "../core/types.ts";
@@ -10,7 +10,7 @@ import { ListPicker } from "./ListPicker.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { type LiveSubView, SubPanel } from "./SubPanel.tsx";
 import { ago, PROVIDER_COLOR } from "./theme.ts";
-import { type Entry, Transcript } from "./Transcript.tsx";
+import { type Entry, type ToolCall, ToolGroup, Transcript } from "./Transcript.tsx";
 
 type Mode = "chat" | "sessions" | "archived" | "projects" | "model";
 
@@ -26,7 +26,7 @@ const HELP = `Commands
   /remember <note>      add to shared project memory      /memory    show project memory
   /help  /quit
 Keys
-  Enter send · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Esc interrupt (denies pending approvals) · Ctrl+C quit
+  Enter send · Ctrl+O fold/unfold tool calls · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Esc interrupt (denies pending approvals) · Ctrl+C quit
   Approval prompts: y allow · n deny
 Attach files with @path, @"path with spaces", or drag a file into the terminal.`;
 
@@ -67,7 +67,22 @@ export function App({ core }: { core: Core }) {
   const history = useRef<string[]>([]);
   const histIdx = useRef(-1);
 
-  const push = (...e: Entry[]) => setEntries((prev) => [...prev, ...e]);
+  // main-agent tool calls since the last message; folded into one transcript entry when the next message lands
+  const toolsRef = useRef<ToolCall[]>([]);
+  const [liveTools, setLiveTools] = useState<ToolCall[]>([]);
+  // subagent tool calls by subtask id, read synchronously when the subagent ends
+  const subToolsRef = useRef(new Map<string, ToolCall[]>());
+  const [expanded, setExpanded] = useState(false);
+  const takeTools = (): Entry[] => {
+    const items = toolsRef.current;
+    toolsRef.current = [];
+    setLiveTools([]);
+    return items.length ? [{ id: nid(), kind: "tools", who: "main", items }] : [];
+  };
+  const push = (...e: Entry[]) => {
+    const tools = takeTools();
+    setEntries((prev) => [...prev, ...tools, ...e]);
+  };
   const sys = (text: string) => push({ id: nid(), kind: "system", text });
   const setInputText = (t: string) => {
     setInput(t);
@@ -91,9 +106,10 @@ export function App({ core }: { core: Core }) {
     const onMain = (ev: Parameters<Parameters<typeof core.on<"main">>[1]>[0]) => {
       if (ev.kind === "text-delta") setStreaming((s) => s + ev.text);
       else if (ev.kind === "session") setModel(ev.model);
-      else if (ev.kind === "tool" && ev.status === "started" && !ev.name.startsWith("mcp__syzygy") && ev.name !== "syzygy.delegate")
-        push({ id: nid(), kind: "tool", who: "main", name: ev.name, detail: ev.detail });
-      else if (ev.kind === "turn-complete") {
+      else if (ev.kind === "tool" && ev.status === "started" && !ev.name.startsWith("mcp__syzygy") && ev.name !== "syzygy.delegate") {
+        toolsRef.current = [...toolsRef.current, { name: ev.name, detail: ev.detail }];
+        setLiveTools(toolsRef.current);
+      } else if (ev.kind === "turn-complete") {
         setStreaming("");
         push({
           id: nid(),
@@ -107,19 +123,24 @@ export function App({ core }: { core: Core }) {
       }
     };
     const onSubStart = (row: any) => setSubs((p) => ({ ...p, [row.id]: { row, tools: [], text: "" } }));
-    const onSub = (id: string, ev: any) =>
+    const onSub = (id: string, ev: any) => {
+      if (ev.kind === "tool" && ev.status === "started") subToolsRef.current.set(id, [...(subToolsRef.current.get(id) ?? []), { name: ev.name, detail: ev.detail }]);
       setSubs((p) => {
         const s = p[id];
         if (!s) return p;
         if (ev.kind === "text-delta") return { ...p, [id]: { ...s, text: s.text + ev.text } };
-        if (ev.kind === "tool" && ev.status === "started") return { ...p, [id]: { ...s, tools: [...s.tools, `${ev.name} ${ev.detail.replace(/\s+/g, " ")}`] } };
+        if (ev.kind === "tool" && ev.status === "started") return { ...p, [id]: { ...s, tools: [...s.tools, { name: ev.name, detail: ev.detail }] } };
         return p;
       });
+    };
     const onSubEnd = (row: any) => {
+      const subTools = subToolsRef.current.get(row.id) ?? [];
+      subToolsRef.current.delete(row.id);
       setSubs((p) => {
         const { [row.id]: _, ...rest } = p;
         return rest;
       });
+      if (subTools.length) push({ id: nid(), kind: "tools", who: "subagent", items: subTools });
       push({ id: nid(), kind: "subagent", provider: row.provider, text: row.result || "", subId: row.id, model: row.model, status: row.status });
     };
     const onApproval = (a: PendingApproval) => {
@@ -136,6 +157,8 @@ export function App({ core }: { core: Core }) {
       stdout.write("\x1b[2J\x1b[3J\x1b[H");
       setSession(s);
       setModel(s.mainModel ?? "");
+      toolsRef.current = [];
+      setLiveTools([]);
       setEntries(rowsToEntries(core.store.messages(s.id), s.mainProvider));
       setEpoch((e) => e + 1);
       setSubs({});
@@ -261,6 +284,12 @@ export function App({ core }: { core: Core }) {
   // always active, so a stuck prompt or open picker never traps the user
   useInput((ch, key) => {
     if (key.ctrl && ch === "c") void quit();
+    if (key.ctrl && ch === "o") {
+      // Static output is already in scrollback: clear it and re-render everything in the other mode
+      stdout.write("\x1b[2J\x1b[3J\x1b[H");
+      setExpanded((v) => !v);
+      setEpoch((e) => e + 1);
+    }
   });
 
   useInput(
@@ -366,7 +395,8 @@ export function App({ core }: { core: Core }) {
 
   return (
     <Box flexDirection="column">
-      <Transcript entries={entries} epoch={epoch} />
+      <Transcript entries={entries} epoch={epoch} expanded={expanded} />
+      <ToolGroup items={liveTools} expanded={expanded} live />
       {streaming ? (
         <Box flexDirection="column" marginTop={1}>
           <Text color={PROVIDER_COLOR[session.mainProvider]} bold>
@@ -375,7 +405,7 @@ export function App({ core }: { core: Core }) {
           <Text>{streaming}</Text>
         </Box>
       ) : null}
-      {showSubs ? <SubPanel subs={liveSubs} /> : liveSubs.length ? <Text color="magenta">↳ {liveSubs.length} subagent(s) working (Tab to show)</Text> : null}
+      {showSubs ? <SubPanel subs={liveSubs} expanded={expanded} /> : liveSubs.length ? <Text color="magenta">↳ {liveSubs.length} subagent(s) working (Tab to show)</Text> : null}
       {approval ? (
         <Box flexDirection="column" borderStyle="double" borderColor="yellow" paddingX={1}>
           <Text bold color="yellow">
@@ -420,7 +450,7 @@ export function App({ core }: { core: Core }) {
         <Text dimColor wrap="truncate-end">
           {core.project.name} · <Text color={PROVIDER_COLOR[session.mainProvider]}>{session.mainProvider}</Text> {model || mainIntent.family}/{mainIntent.effort}
           {" → sub "}
-          <Text color={PROVIDER_COLOR[subIntent.provider]}>{subIntent.provider}</Text> {subIntent.family}/{subIntent.effort} · approvals {settings.approvals} · 5h codex {formatTokens(usage.codex)} claude {formatTokens(usage.claude)}
+          <Text color={PROVIDER_COLOR[subIntent.provider]}>{subIntent.provider}</Text> {subIntent.family}/{subIntent.effort} · approvals {settings.approvals} · 5h/wk codex {formatPct(usage.codex?.fiveHour)}/{formatPct(usage.codex?.weekly)} claude {formatPct(usage.claude?.fiveHour)}/{formatPct(usage.claude?.weekly)}
         </Text>
         <Text dimColor wrap="truncate-start">
           {status}

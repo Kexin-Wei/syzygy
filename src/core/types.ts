@@ -38,8 +38,8 @@ export type AgentEvent =
   | { kind: "session"; sessionId: string; model: string }
   | { kind: "text-delta"; text: string }
   | { kind: "tool"; name: string; detail: string; status: "started" | "completed" }
-  /** tokens processed by one model response or turn: all input (cached included) plus output */
-  | { kind: "usage"; tokens: number }
+  /** the account's rate-limit usage, as reported alongside a model response */
+  | { kind: "account-usage"; usage: AccountUsage }
   | { kind: "turn-complete"; text: string; status: "completed" | "interrupted" | "failed"; error?: string };
 
 export type ApprovalRequest = {
@@ -82,8 +82,18 @@ export interface AgentSession {
   close(): Promise<void>;
 }
 
+/** How much of a subscription's rate limits is used, in percent (0–100), across everything on that account. */
+export interface AccountUsage {
+  fiveHour: number | null;
+  weekly: number | null;
+  /** ms epoch of the reading */
+  at: number;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
+  /** current account usage; may cost a tiny request on providers without a free usage endpoint */
+  readUsage(): Promise<AccountUsage | null>;
   /** false once a shared backend process has died; the core then recreates the adapter */
   alive(): boolean;
   listModels(): Promise<ModelInfo[]>;

@@ -25,11 +25,18 @@ function fakeCore() {
     session: { id: "s1", projectId: 1, title: "t", mainProvider: "codex", mainSessionId: null, mainModel: null, archived: false, createdAt: 0, updatedAt: 0 },
     store: { messages: () => [] },
     usage: () => ({ codex: null, claude: null }),
+    busy: false,
+    async interrupt() {},
     async updateSettings(patch: Partial<Settings>) {
       settings = { ...settings, ...patch };
     },
     async send(input: unknown[]) {
       sent.push(input);
+    },
+    /** what the real core does when a turn starts or ends */
+    setBusy(b: boolean) {
+      core.busy = b;
+      core.emit("busy", b);
     },
   });
   Object.defineProperty(core, "settings", { get: () => settings }); // Object.assign would snapshot a getter
@@ -97,6 +104,45 @@ test("tool calls fold into one line; Ctrl+O shows every command", async () => {
   const expanded = frames.join("\n");
   expect(expanded).toContain("gh pr view 35");
   expect(expanded).toContain("/repo/AGENTS.md");
+  unmount();
+});
+
+test("messages sent while busy are queued and go out when the turn ends", async () => {
+  const { core, sent } = fakeCore();
+  const fake = core as unknown as { setBusy(b: boolean): void };
+  const { stdin, lastFrame, unmount } = render(<App core={core} />);
+  await tick();
+  fake.setBusy(true);
+  await type(stdin, "first", KEY.enter, "second", KEY.enter);
+  expect(sent).toHaveLength(0);
+  expect(lastFrame()).toContain("⏳ first");
+  expect(lastFrame()).toContain("⏳ second");
+  fake.setBusy(false);
+  await tick();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContainEqual({ type: "text", text: "first" });
+  expect(lastFrame()).not.toContain("⏳ first");
+  fake.setBusy(true);
+  await tick();
+  fake.setBusy(false);
+  await tick();
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toContainEqual({ type: "text", text: "second" });
+  unmount();
+});
+
+test("Esc while busy returns queued messages to the input", async () => {
+  const { core, sent } = fakeCore();
+  const fake = core as unknown as { setBusy(b: boolean): void };
+  const { stdin, lastFrame, unmount } = render(<App core={core} />);
+  await tick();
+  fake.setBusy(true);
+  await type(stdin, "fix the tests", KEY.enter, KEY.esc);
+  expect(lastFrame()).not.toContain("⏳");
+  expect(lastFrame()).toContain("… fix the tests"); // back in the input box (busy prompt)
+  fake.setBusy(false);
+  await tick();
+  expect(sent).toHaveLength(0);
   unmount();
 });
 

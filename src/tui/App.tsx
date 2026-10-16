@@ -254,6 +254,37 @@ export function App({ core }: { core: Core }) {
     }
   }
 
+  // messages sent while the agent works; each goes out when the previous turn ends
+  type Queued = { line: string; input: UserInput[]; pasted: UserInput[] };
+  const queueRef = useRef<Queued[]>([]);
+  const [queued, setQueued] = useState<string[]>([]);
+  const syncQueue = () => setQueued(queueRef.current.map((q) => q.line));
+
+  function sendNow({ line, input }: Queued) {
+    const attachments = input.filter((i) => i.type !== "text").map((i) => (i as { path: string }).path);
+    push({ id: nid(), kind: "user", text: line, attachments });
+    setStatus("");
+    void run(core.send(input));
+  }
+
+  useEffect(() => {
+    if (busy || core.busy) return;
+    const next = queueRef.current.shift();
+    if (!next) return;
+    syncQueue();
+    sendNow(next);
+  }, [busy]);
+
+  /** Esc: put queued messages back in the input instead of sending them after the interrupt. */
+  function unqueue() {
+    const q = queueRef.current;
+    if (!q.length) return;
+    queueRef.current = [];
+    syncQueue();
+    setInputText([...q.map((m) => m.line), input].filter(Boolean).join(" "));
+    setPending((p) => [...q.flatMap((m) => m.pasted), ...p]);
+  }
+
   function submit(text: string) {
     const line = text.trim();
     if (!line && !pending.length) return;
@@ -262,14 +293,14 @@ export function App({ core }: { core: Core }) {
     if (line) history.current.unshift(line);
     histIdx.current = -1;
     if (line.startsWith("/")) return void run(command(line));
-    if (busy) return sys("agent is working; Esc to interrupt");
-    const parsed = parseInput(line, core.project.path);
-    const all = [...parsed.input, ...pending];
-    const attachments = all.filter((i) => i.type !== "text").map((i) => (i as { path: string }).path);
+    const msg: Queued = { line, input: [...parseInput(line, core.project.path).input, ...pending], pasted: pending };
     setPending([]);
-    push({ id: nid(), kind: "user", text: line, attachments });
-    setStatus("");
-    void run(core.send(all));
+    // core.busy flips synchronously when a turn starts, so this never races a send that is just beginning
+    if (core.busy || queueRef.current.length) {
+      queueRef.current.push(msg);
+      return syncQueue();
+    }
+    sendNow(msg);
   }
 
   usePaste(
@@ -317,6 +348,7 @@ export function App({ core }: { core: Core }) {
         if (key.escape) return setDismissed(input);
       }
       if (key.escape && busy) {
+        unqueue();
         void run(core.interrupt());
         return sys("interrupting…");
       }
@@ -418,6 +450,12 @@ export function App({ core }: { core: Core }) {
       {overlay}
       {mode === "chat" ? (
         <Box flexDirection="column" marginTop={1}>
+          {queued.map((q, i) => (
+            <Text key={i} dimColor wrap="truncate-end">
+              ⏳ {q}
+            </Text>
+          ))}
+          {queued.length ? <Text dimColor>{"   "}queued: sends when the agent finishes · Esc interrupts and returns it to the input</Text> : null}
           {pending.length ? (
             <Text dimColor>
               📎 {pending.map((p) => (p as { path: string }).path.split("/").pop()).join(", ")}
@@ -431,7 +469,7 @@ export function App({ core }: { core: Core }) {
               onChange={setInput}
               onSubmit={submit}
               focus={!approval}
-              placeholder={busy ? "working… (Esc to interrupt)" : "message, @file, /help"}
+              placeholder={busy ? "working… type to queue a message · Esc to interrupt" : "message, @file, /help"}
             />
           </Box>
           {sugg ? (

@@ -50,6 +50,9 @@ export function App({ core }: { core: Core }) {
   const [entries, setEntries] = useState<Entry[]>(() => rowsToEntries(core.store.messages(core.session.id), core.session.mainProvider));
   const [epoch, setEpoch] = useState(0);
   const [streaming, setStreaming] = useState("");
+  const streamRef = useRef("");
+  // true once the current turn has printed its header (later parts omit it)
+  const turnStartedRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [subs, setSubs] = useState<Record<string, LiveSubView>>({});
   const [showSubs, setShowSubs] = useState(true);
@@ -103,23 +106,39 @@ export function App({ core }: { core: Core }) {
   };
 
   useEffect(() => {
+    // a turn is shown in the order it happened: text, then the tool calls it ran, then more text
+    const part = (text: string, extra: Partial<Entry & { kind: "assistant" }> = {}): Entry => {
+      const e: Entry = { id: nid(), kind: "assistant", provider: core.session.mainProvider, text, model: core.mainResolved?.model, continued: turnStartedRef.current, ...extra };
+      turnStartedRef.current = true;
+      return e;
+    };
+    const flushText = () => {
+      const text = streamRef.current.trim();
+      streamRef.current = "";
+      setStreaming("");
+      if (text) push(part(text));
+    };
     const onMain = (ev: Parameters<Parameters<typeof core.on<"main">>[1]>[0]) => {
-      if (ev.kind === "text-delta") setStreaming((s) => s + ev.text);
-      else if (ev.kind === "session") setModel(ev.model);
-      else if (ev.kind === "tool" && ev.status === "started" && !ev.name.startsWith("mcp__syzygy") && ev.name !== "syzygy.delegate") {
+      if (ev.kind === "text-delta") {
+        if (toolsRef.current.length) push(); // text resumed: the tool calls before it go into the transcript
+        streamRef.current += ev.text;
+        setStreaming(streamRef.current);
+      } else if (ev.kind === "session") setModel(ev.model);
+      else if (ev.kind === "tool" && ev.status === "started") {
+        flushText();
+        if (ev.name.startsWith("mcp__syzygy") || ev.name === "syzygy.delegate") return; // shown as the subagent panel
         toolsRef.current = [...toolsRef.current, { name: ev.name, detail: ev.detail }];
         setLiveTools(toolsRef.current);
       } else if (ev.kind === "turn-complete") {
+        // the final part: whatever streamed since the last tool call, or the reported text if nothing streamed
+        const rest = streamRef.current.trim();
+        streamRef.current = "";
         setStreaming("");
-        push({
-          id: nid(),
-          kind: "assistant",
-          provider: core.session.mainProvider,
-          text: ev.text || ev.error || "",
-          model: core.mainResolved?.model,
-          status: ev.status,
-        });
-        if (ev.error && ev.text) sys(ev.error);
+        const text = rest || (turnStartedRef.current ? "" : ev.text || ev.error || "");
+        if (text || ev.status !== "completed") push(part(text, { status: ev.status }));
+        else push();
+        turnStartedRef.current = false;
+        if (ev.error && (ev.text || rest)) sys(ev.error);
       }
     };
     const onSubStart = (row: any) => setSubs((p) => ({ ...p, [row.id]: { row, tools: [], text: "" } }));
@@ -163,6 +182,8 @@ export function App({ core }: { core: Core }) {
       setEpoch((e) => e + 1);
       setSubs({});
       setStreaming("");
+      streamRef.current = "";
+      turnStartedRef.current = false;
     };
     core.on("main", onMain);
     core.on("sub-start", onSubStart);
@@ -429,13 +450,15 @@ export function App({ core }: { core: Core }) {
     <Box flexDirection="column">
       <Transcript entries={entries} epoch={epoch} expanded={expanded} />
       <ToolGroup items={liveTools} expanded={expanded} live />
-      {streaming ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color={PROVIDER_COLOR[session.mainProvider]} bold>
-            ◆ {session.mainProvider}
-          </Text>
+      {streaming.trim() ? (
+        <Box flexDirection="column" marginTop={turnStartedRef.current ? 0 : 1}>
+          {turnStartedRef.current ? null : (
+            <Text color={PROVIDER_COLOR[session.mainProvider]} bold>
+              ◆ {session.mainProvider}
+            </Text>
+          )}
           <Box paddingLeft={2}>
-            <Text>{streaming}</Text>
+            <Text>{streaming.trim()}</Text>
           </Box>
         </Box>
       ) : null}

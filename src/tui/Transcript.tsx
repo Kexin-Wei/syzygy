@@ -4,7 +4,8 @@ import { clip, PROVIDER_COLOR, PROVIDER_LABEL } from "./theme.ts";
 
 export type Entry =
   | { id: string; kind: "user"; text: string; attachments?: string[] }
-  | { id: string; kind: "assistant"; provider: ProviderId; text: string; model?: string; status?: string }
+  /** `continued`: a later part of the same turn (text after tool calls), shown without the header */
+  | { id: string; kind: "assistant"; provider: ProviderId; text: string; model?: string; status?: string; continued?: boolean }
   | { id: string; kind: "subagent"; provider: ProviderId; text: string; subId: string; model?: string; status?: string }
   | { id: string; kind: "tools"; who: "main" | "subagent"; items: ToolCall[] }
   | { id: string; kind: "system"; text: string };
@@ -86,15 +87,19 @@ function EntryView({ e, expanded }: { e: Entry; expanded: boolean }) {
       return <UserMessage text={e.text} attachments={e.attachments} />;
     case "assistant":
       return (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color={PROVIDER_COLOR[e.provider]} bold>
-            ◆ {PROVIDER_LABEL[e.provider]}
-            {e.model ? <Text dimColor> {e.model}</Text> : null}
-            {e.status && e.status !== "completed" ? <Text color="red"> [{e.status}]</Text> : null}
-          </Text>
-          <Box paddingLeft={2}>
-            <Text>{e.text}</Text>
-          </Box>
+        <Box flexDirection="column" marginTop={e.continued ? 0 : 1}>
+          {e.continued ? null : (
+            <Text color={PROVIDER_COLOR[e.provider]} bold>
+              ◆ {PROVIDER_LABEL[e.provider]}
+              {e.model ? <Text dimColor> {e.model}</Text> : null}
+            </Text>
+          )}
+          {e.text ? (
+            <Box paddingLeft={2}>
+              <Text>{e.text}</Text>
+            </Box>
+          ) : null}
+          {e.status && e.status !== "completed" ? <Text color="red">{"  "}[{e.status}]</Text> : null}
         </Box>
       );
     case "subagent":

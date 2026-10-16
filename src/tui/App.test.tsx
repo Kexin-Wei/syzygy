@@ -112,6 +112,27 @@ test("tool calls fold to one line each; Ctrl+O shows full commands", async () =>
   unmount();
 });
 
+test("a turn shows text and tool calls in the order they happened", async () => {
+  const { core } = fakeCore();
+  const { frames, unmount } = render(<App core={core} />);
+  await tick();
+  const ee = core as unknown as EventEmitter;
+  ee.emit("main", { kind: "text-delta", text: "Checking the branches." });
+  ee.emit("main", { kind: "tool", name: "shell", detail: "git fetch origin", status: "started" });
+  ee.emit("main", { kind: "tool", name: "shell", detail: "gh pr view 34", status: "started" });
+  ee.emit("main", { kind: "text-delta", text: "\n\nBoth PRs are stale." });
+  ee.emit("main", { kind: "turn-complete", text: "Both PRs are stale.", status: "completed" });
+  await tick();
+  const out = frames.at(-1)!;
+  const at = (s: string) => out.indexOf(s);
+  expect(at("Checking the branches.")).toBeGreaterThan(-1);
+  expect(at("Checking the branches.")).toBeLessThan(at("2 tool calls"));
+  expect(at("gh pr view 34")).toBeLessThan(at("Both PRs are stale."));
+  expect(out.match(/◆ codex/g)).toHaveLength(1); // one header per turn
+  expect(out.match(/Both PRs are stale\./g)).toHaveLength(1);
+  unmount();
+});
+
 test("messages sent while busy are queued and go out when the turn ends", async () => {
   const { core, sent } = fakeCore();
   const fake = core as unknown as { setBusy(b: boolean): void };

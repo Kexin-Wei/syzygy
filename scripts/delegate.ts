@@ -1,5 +1,5 @@
 // Live delegation round trip in a throwaway project.
-// Usage: bun scripts/delegate.ts <main: codex|claude> [sub family, e.g. sonnet|sol]
+// Usage: bun scripts/delegate.ts <main: codex|claude> [sub family, e.g. sonnet|sol] (SYZ_APPROVALS=auto to test auto approvals)
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ const core = new Core(new Store(":memory:"));
 const sub = subFamily
   ? { ...DEFAULT_SETTINGS.sub, [mainProvider]: { provider: /^(opus|sonnet|haiku)/.test(subFamily) ? "claude" : "codex", family: subFamily, effort: "low" } }
   : DEFAULT_SETTINGS.sub;
-core.store.saveGlobalSettings({ ...DEFAULT_SETTINGS, mainProvider, sub, allowSubOverride: false });
+core.store.saveGlobalSettings({ ...DEFAULT_SETTINGS, mainProvider, sub, allowSubOverride: false, approvals: process.env.SYZ_APPROVALS === "auto" ? "auto" : "ask" });
 await core.openProject(dir);
 
 core.on("main", (e) => e.kind !== "text-delta" && console.log("[main]", JSON.stringify(e).slice(0, 300)));

@@ -217,6 +217,7 @@ export class Core extends EventEmitter<CoreEvents> {
       mcpServers: [this.bridge.mcpSpec("main")],
       instructions: mainInstructions(provider, settings.sub[provider], this.project.path, settings.balance),
       approvals: settings.approvals,
+      network: settings.network,
       onApproval: (req) => this.askApproval(req, "main"),
     });
     this.mainResolved = resolved;
@@ -360,6 +361,7 @@ export class Core extends EventEmitter<CoreEvents> {
       mcpServers: row.provider === "claude" ? [this.bridge.mcpSpec("sub")] : [],
       instructions: subInstructions(this.session.mainProvider, this.project.path),
       approvals: this.settings.approvals,
+      network: this.settings.network,
       onApproval: (req) => this.askApproval(req, "subagent"),
     });
   }

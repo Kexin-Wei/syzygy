@@ -60,6 +60,8 @@ export interface Settings {
   approvals: "ask" | "auto";
   /** share token usage between providers: pick the less-used main agent and enforce delegation past a gap */
   balance: boolean;
+  /** let sandboxed codex commands reach the network (git push, gh, package installs) */
+  network: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -75,6 +77,7 @@ export const DEFAULT_SETTINGS: Settings = {
   allowSubOverride: true,
   approvals: "ask",
   balance: true,
+  network: true,
 };
 
 const SCHEMA = `

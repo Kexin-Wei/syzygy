@@ -21,6 +21,7 @@ const HELP = `Commands
   /project <path>       open a folder as a project        /model     models, effort, approvals
   /main codex|claude    set the default main agent and start a new session
   /paste                attach the clipboard image        /approvals ask|auto
+  /network on|off       let codex commands reach the network (git push, gh, installs)
   /balance on|off       share tokens: new sessions start on the less-used agent, delegation enforced past a 2x gap
   /remember <note>      add to shared project memory      /memory    show project memory
   /help  /quit
@@ -201,6 +202,10 @@ export function App({ core }: { core: Core }) {
       case "model":
       case "models":
         return setMode("model");
+      case "network":
+        if (arg !== "on" && arg !== "off") return sys(`network: ${core.settings.network ? "on" : "off"} (usage: /network on|off)`);
+        await core.updateSettings({ network: arg === "on" });
+        return sys(`network: ${arg} (codex commands ${arg === "on" ? "can" : "cannot"} reach the network)`);
       case "balance":
         if (arg !== "on" && arg !== "off") return sys(`balance: ${core.settings.balance ? "on" : "off"} (usage: /balance on|off)`);
         await core.updateSettings({ balance: arg === "on" });

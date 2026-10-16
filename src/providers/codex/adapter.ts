@@ -233,8 +233,11 @@ export class CodexAdapter implements ProviderAdapter {
         ...(s.env ? { env: s.env } : {}),
         // delegate calls block until the subagent is done
         tool_timeout_sec: 6 * 3600,
+        // syzygy's own tools; otherwise codex asks for approval and "never" turns that into a rejection
+        default_tools_approval_mode: "approve",
       };
     }
+    if (opts.network) config["sandbox_workspace_write.network_access"] = true;
     const common = {
       model: opts.resolved.model,
       cwd: opts.cwd,

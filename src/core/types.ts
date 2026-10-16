@@ -68,6 +68,8 @@ export interface SessionOptions {
   instructions?: string;
   /** "ask" routes risky actions to onApproval; "auto" lets the provider decide */
   approvals?: "ask" | "auto";
+  /** allow network access from sandboxed commands (codex sandboxes block it by default) */
+  network?: boolean;
   onApproval?: ApprovalHandler;
 }
 

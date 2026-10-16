@@ -1,0 +1,28 @@
+{
+  "name": "syzygy",
+  "version": "0.1.0",
+  "description": "Codex and Claude Code in one TUI: a main agent that delegates to the other",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "syzygy": "src/cli.tsx"
+  },
+  "scripts": {
+    "start": "bun src/cli.tsx",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "smoke": "bun scripts/smoke.ts",
+    "gen:codex": "codex app-server generate-ts -o src/protocol/codex"
+  },
+  "dependencies": {
+    "ink": "8.0.0",
+    "ink-text-input": "6.0.0",
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}

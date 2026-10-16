@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formatTokens, usageNote } from "./core.ts";
+import { formatTokens, pickMain, usageNote } from "./core.ts";
 
 test("formats token counts", () => {
   expect(formatTokens(950)).toBe("950");
@@ -8,7 +8,20 @@ test("formats token counts", () => {
 });
 
 test("usage note names both agents", () => {
-  expect(usageNote("codex", "claude", { codex: 2_000_000, claude: 30_000 })).toBe(
-    "[syzygy] tokens used in the last 5h: Codex (you) 2.0M, Claude Code (subagent) 30k.",
+  expect(usageNote("codex", "claude", { codex: 2_000_000, claude: 1_500_000 })).toBe(
+    "[syzygy] tokens used in the last 5h: Codex (you) 2.0M, Claude Code (subagent) 1.5M.",
   );
+});
+
+test("picks the less-used provider as main once usage matters", () => {
+  expect(pickMain({ codex: 1_100_000, claude: 0 }, "codex")).toBe("claude");
+  expect(pickMain({ codex: 200_000, claude: 900_000 }, "claude")).toBe("codex");
+  expect(pickMain({ codex: 50_000, claude: 0 }, "codex")).toBe("codex"); // below the floor
+});
+
+test("note turns into a rule past a 2x gap", () => {
+  expect(usageNote("codex", "claude", { codex: 1_100_000, claude: 0 })).toContain("delegate every multi-step part");
+  expect(usageNote("codex", "claude", { codex: 0, claude: 400_000 })).toContain("do the work yourself");
+  expect(usageNote("codex", "claude", { codex: 300_000, claude: 200_000 })).not.toContain("Rule");
+  expect(usageNote("codex", "claude", { codex: 60_000, claude: 0 })).not.toContain("Rule"); // below the floor
 });

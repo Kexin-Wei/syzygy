@@ -58,6 +58,8 @@ export interface Settings {
   /** let the main agent override subagent model/effort per call */
   allowSubOverride: boolean;
   approvals: "ask" | "auto";
+  /** share token usage between providers: pick the less-used main agent and enforce delegation past a gap */
+  balance: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -72,6 +74,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   allowSubOverride: true,
   approvals: "ask",
+  balance: true,
 };
 
 const SCHEMA = `

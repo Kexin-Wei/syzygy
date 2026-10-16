@@ -21,6 +21,7 @@ const HELP = `Commands
   /project <path>       open a folder as a project        /model     models, effort, approvals
   /main codex|claude    set the default main agent and start a new session
   /paste                attach the clipboard image        /approvals ask|auto
+  /balance on|off       share tokens: new sessions start on the less-used agent, delegation enforced past a 2x gap
   /remember <note>      add to shared project memory      /memory    show project memory
   /help  /quit
 Keys
@@ -200,6 +201,10 @@ export function App({ core }: { core: Core }) {
       case "model":
       case "models":
         return setMode("model");
+      case "balance":
+        if (arg !== "on" && arg !== "off") return sys(`balance: ${core.settings.balance ? "on" : "off"} (usage: /balance on|off)`);
+        await core.updateSettings({ balance: arg === "on" });
+        return sys(`balance: ${arg}`);
       case "approvals":
         if (arg !== "ask" && arg !== "auto") return sys(`approvals: ${core.settings.approvals} (usage: /approvals ask|auto)`);
         await core.updateSettings({ approvals: arg });

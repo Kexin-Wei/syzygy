@@ -40,18 +40,37 @@ export function formatTokens(n: number): string {
 }
 
 /** Per-turn note that lets the main agent weigh doing work itself against delegating. */
-export function usageNote(main: ProviderId, sub: ProviderId, usage: Record<ProviderId, number>): string {
-  return `[syzygy] tokens used in the last 5h: ${PROVIDER_NAME[main]} (you) ${formatTokens(usage[main])}, ${PROVIDER_NAME[sub]} (subagent) ${formatTokens(usage[sub])}.`;
+/** Below this, usage is too small to act on. */
+export const BALANCE_FLOOR = 100_000;
+/** One side at this multiple of the other turns the suggestion into a rule. */
+export const BALANCE_RATIO = 2;
+
+/** The provider with less usage, once usage is large enough to matter; otherwise `fallback`. */
+export function pickMain(usage: Record<ProviderId, number>, fallback: ProviderId): ProviderId {
+  if (Math.max(usage.codex, usage.claude) < BALANCE_FLOOR || usage.codex === usage.claude) return fallback;
+  return usage.codex < usage.claude ? "codex" : "claude";
 }
 
-function mainInstructions(main: ProviderId, sub: ModelIntent, projectPath: string): string {
+/** Per-turn note that lets the main agent weigh doing work itself against delegating. */
+export function usageNote(main: ProviderId, sub: ProviderId, usage: Record<ProviderId, number>): string {
+  const note = `[syzygy] tokens used in the last 5h: ${PROVIDER_NAME[main]} (you) ${formatTokens(usage[main])}, ${PROVIDER_NAME[sub]} (subagent) ${formatTokens(usage[sub])}.`;
+  const [hi, lo] = usage[main] >= usage[sub] ? [main, sub] : [sub, main];
+  if (usage[hi] < BALANCE_FLOOR || usage[hi] < BALANCE_RATIO * usage[lo]) return note;
+  return hi === main
+    ? `${note} Rule for this request: you are at ${BALANCE_RATIO}x or more of the subagent, so delegate every multi-step part ` +
+        `(implementation, edits, scripted changes, builds, checks) and only plan, answer directly, and review its reports.`
+    : `${note} Rule for this request: the subagent is at ${BALANCE_RATIO}x or more of you, so do the work yourself and delegate only if the user asks.`;
+}
+
+function mainInstructions(main: ProviderId, sub: ModelIntent, projectPath: string, balanceOn: boolean): string {
   const balance =
-    sub.provider === main
+    sub.provider === main || !balanceOn
       ? ""
       : `\nThe user has subscriptions to both ${PROVIDER_NAME[main]} and ${PROVIDER_NAME[sub.provider]} and wants token usage shared between them. ` +
         `Each user message ends with a [syzygy] note giving recent usage for both. When you have used clearly more, hand self-contained ` +
         `multi-step work (implementation, edits across files, scripted rewrites, builds and checks) to the subagent and keep planning and ` +
-        `checking for yourself; when the subagent has used more, do more yourself. Quick one-step tasks and answers stay with you either way.`;
+        `checking for yourself; when the subagent has used more, do more yourself. Quick one-step tasks and answers stay with you either way. ` +
+        `When the note states a rule, follow it.`;
   return (
     `You are the main agent in Syzygy: you talk to the user and can hand work to a subagent ` +
     `(${PROVIDER_NAME[sub.provider]}, ${sub.family} at ${sub.effort} effort) through the syzygy MCP tools.\n` +
@@ -139,12 +158,12 @@ export class Core extends EventEmitter<CoreEvents> {
     await this.closeAgents();
     this.project = this.store.openProject(path);
     const latest = this.store.listSessions(this.project.id)[0];
-    this.setSession(latest ?? this.store.createSession(this.project.id, this.settings.mainProvider));
+    this.setSession(latest ?? this.store.createSession(this.project.id, this.defaultMain()));
   }
 
   async newSession(mainProvider?: ProviderId): Promise<void> {
     await this.closeAgents();
-    this.setSession(this.store.createSession(this.project.id, mainProvider ?? this.settings.mainProvider));
+    this.setSession(this.store.createSession(this.project.id, mainProvider ?? this.defaultMain()));
   }
 
   async resumeSession(id: string): Promise<void> {
@@ -196,7 +215,7 @@ export class Core extends EventEmitter<CoreEvents> {
       resolved,
       resumeId: this.session.mainSessionId ?? undefined,
       mcpServers: [this.bridge.mcpSpec("main")],
-      instructions: mainInstructions(provider, settings.sub[provider], this.project.path),
+      instructions: mainInstructions(provider, settings.sub[provider], this.project.path, settings.balance),
       approvals: settings.approvals,
       onApproval: (req) => this.askApproval(req, "main"),
     });
@@ -221,7 +240,8 @@ export class Core extends EventEmitter<CoreEvents> {
     try {
       const main = await this.ensureMain();
       const sub = this.settings.sub[main.provider].provider;
-      const toMain: UserInput[] = sub === main.provider ? input : [...input, { type: "text", text: usageNote(main.provider, sub, this.usage()) }];
+      const balance = sub !== main.provider && this.settings.balance;
+      const toMain: UserInput[] = balance ? [...input, { type: "text", text: usageNote(main.provider, sub, this.usage()) }] : input;
       for await (const ev of main.send(toMain)) {
         const current = this.session.id === sid;
         if (ev.kind === "usage") this.recordUsage(main.provider, ev.tokens);
@@ -247,6 +267,15 @@ export class Core extends EventEmitter<CoreEvents> {
       // a failed turn may mean a dead process; restart (with resume) on the next turn
       if (failed || this.restartPending) await this.dropMain();
     }
+  }
+
+  /** Main agent for a new session: the configured one, or the less-used provider when balancing. */
+  private defaultMain(): ProviderId {
+    const fallback = this.settings.mainProvider;
+    if (!this.settings.balance) return fallback;
+    const picked = pickMain(this.usage(), fallback);
+    if (picked !== fallback) this.emit("status", `main agent: ${picked} (less used in the last 5h; /balance off to keep ${fallback})`);
+    return picked;
   }
 
   /** Tokens per provider over the balancing window, across all projects. */

@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../store/db.ts";
+import type { AgentEvent, AgentSession } from "./types.ts";
 import { Core, formatPct, pickMain, usageNote } from "./core.ts";
 
 const u = (fiveHour: number | null, weekly: number | null = null) => ({ fiveHour, weekly, at: 0 });
@@ -52,4 +53,75 @@ test("startup opens a new chat unless resuming; untouched chats are reused", asy
   } finally {
     await core.shutdown();
   }
+});
+
+test("restarts the backend and resends once when it exits before producing output", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "syzygy-retry-"));
+  const core = new Core(new Store(":memory:"));
+  await core.openProject(dir, { resume: false });
+
+  // first turn: backend dies immediately; second turn: succeeds
+  const scripts: AgentEvent[][] = [
+    [{ kind: "turn-complete", text: "", status: "failed", error: "codex app-server exited (0): boom" }],
+    [{ kind: "text-delta", text: "hi" }, { kind: "turn-complete", text: "hi there", status: "completed" }],
+  ];
+  let starts = 0;
+  const fakeSession = (events: AgentEvent[]): AgentSession =>
+    ({
+      provider: "codex",
+      sessionId: `thr-${starts}`,
+      async *send() {
+        yield* events;
+      },
+      async interrupt() {},
+      async close() {},
+    }) as unknown as AgentSession;
+  const anyCore = core as any;
+  anyCore.resolve = async () => ({ provider: "codex", model: "gpt-x", effort: "low" });
+  anyCore.adapter = async () => ({ startSession: async () => fakeSession(scripts[starts++]!) });
+
+  const seen: AgentEvent[] = [];
+  core.on("main", (e) => seen.push(e));
+  await core.send([{ type: "text", text: "do it" }]);
+
+  expect(starts).toBe(2); // started a fresh backend for the retry
+  // the user never sees the transient backend-death failure, only the successful answer
+  const completes = seen.filter((e) => e.kind === "turn-complete");
+  expect(completes).toHaveLength(1);
+  expect(completes[0]).toMatchObject({ status: "completed", text: "hi there" });
+  const msgs = core.store.messages(core.session.id).filter((m) => m.role === "assistant");
+  expect(msgs).toHaveLength(1);
+  expect(msgs[0]!.text).toBe("hi there");
+  await core.shutdown();
+});
+
+test("shows the failure when the backend dies again on the retry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "syzygy-retry2-"));
+  const core = new Core(new Store(":memory:"));
+  await core.openProject(dir, { resume: false });
+  let starts = 0;
+  const anyCore = core as any;
+  anyCore.resolve = async () => ({ provider: "codex", model: "gpt-x", effort: "low" });
+  anyCore.adapter = async () => ({
+    startSession: async () => {
+      starts++;
+      return {
+        provider: "codex",
+        sessionId: "t",
+        async *send(): AsyncGenerator<AgentEvent> {
+          yield { kind: "turn-complete", text: "", status: "failed", error: "codex app-server exited (0): boom" };
+        },
+        async interrupt() {},
+        async close() {},
+      } as unknown as AgentSession;
+    },
+  });
+  const seen: AgentEvent[] = [];
+  core.on("main", (e) => seen.push(e));
+  await core.send([{ type: "text", text: "do it" }]);
+  expect(starts).toBe(2); // tried once more, then gave up
+  const completes = seen.filter((e) => e.kind === "turn-complete");
+  expect(completes).toHaveLength(1);
+  expect(completes[0]).toMatchObject({ status: "failed" });
+  await core.shutdown();
 });

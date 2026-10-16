@@ -255,24 +255,14 @@ export class Core extends EventEmitter<CoreEvents> {
     }
     let failed = false;
     try {
-      const main = await this.ensureMain();
-      const sub = this.settings.sub[main.provider].provider;
-      const balance = sub !== main.provider && this.settings.balance;
-      const toMain: UserInput[] = balance ? [...input, { type: "text", text: usageNote(main.provider, sub, this.usage()) }] : input;
-      for await (const ev of main.send(toMain)) {
-        const current = this.session.id === sid;
-        if (ev.kind === "account-usage") this.setUsage(main.provider, ev.usage);
-        if (ev.kind === "session" && current) this.mainResolved = { ...this.mainResolved!, model: ev.model };
-        if (ev.kind === "turn-complete") {
-          failed = ev.status === "failed";
-          const body = ev.text || (ev.error ? `[${ev.status}] ${ev.error}` : `[${ev.status}]`);
-          this.store.addMessage(sid, "assistant", body, { status: ev.status, model: this.mainResolved?.model });
-          const row = this.store.getSession(sid);
-          if (!failed || !row?.mainSessionId) this.store.updateSession(sid, { mainSessionId: main.sessionId, mainModel: this.mainResolved?.model ?? null });
-          if (current) this.session = this.store.getSession(sid)!;
-        }
-        if (current) this.emit("main", ev);
+      // If the backend dies before producing anything, restart it and resend the message once.
+      let r = await this.runMainTurn(sid, input, true);
+      if (r.deferredDeath) {
+        await this.resetMain();
+        this.emit("status", "backend exited; restarted and retrying your message…");
+        r = await this.runMainTurn(sid, input, false);
       }
+      failed = r.failed;
     } catch (e) {
       failed = true;
       const msg = String((e as Error).message ?? e);
@@ -285,6 +275,45 @@ export class Core extends EventEmitter<CoreEvents> {
       if (failed || this.restartPending) await this.dropMain();
       void this.refreshUsage(60_000); // the turn moved the meters; codex reads are free
     }
+  }
+
+  /**
+   * Run one main-agent turn. When `canRetry` and the backend exits before any output,
+   * the death is deferred (not stored or shown) so the caller can restart and resend once.
+   */
+  private async runMainTurn(sid: string, input: UserInput[], canRetry: boolean): Promise<{ failed: boolean; deferredDeath: boolean }> {
+    let produced = false;
+    const main = await this.ensureMain();
+    const sub = this.settings.sub[main.provider].provider;
+    const balance = sub !== main.provider && this.settings.balance;
+    const toMain: UserInput[] = balance ? [...input, { type: "text", text: usageNote(main.provider, sub, this.usage()) }] : input;
+    for await (const ev of main.send(toMain)) {
+      const current = this.session.id === sid;
+      if (ev.kind === "account-usage") this.setUsage(main.provider, ev.usage);
+      if (ev.kind === "text-delta" || ev.kind === "tool") produced = true;
+      if (ev.kind === "session" && current) this.mainResolved = { ...this.mainResolved!, model: ev.model };
+      if (ev.kind === "turn-complete") {
+        const failed = ev.status === "failed";
+        const backendDied = failed && /exited|not running/i.test(ev.error ?? "");
+        if (backendDied && canRetry && !produced && !ev.text) return { failed: true, deferredDeath: true };
+        const body = ev.text || (ev.error ? `[${ev.status}] ${ev.error}` : `[${ev.status}]`);
+        this.store.addMessage(sid, "assistant", body, { status: ev.status, model: this.mainResolved?.model });
+        const row = this.store.getSession(sid);
+        if (!failed || !row?.mainSessionId) this.store.updateSession(sid, { mainSessionId: main.sessionId, mainModel: this.mainResolved?.model ?? null });
+        if (current) this.session = this.store.getSession(sid)!;
+        if (current) this.emit("main", ev);
+        return { failed, deferredDeath: false };
+      }
+      if (current) this.emit("main", ev);
+    }
+    return { failed: false, deferredDeath: false };
+  }
+
+  /** Close the current main session now (even mid-turn) so the next `ensureMain` rebuilds it on a fresh backend. */
+  private async resetMain(): Promise<void> {
+    const m = this.main;
+    this.main = undefined;
+    await m?.close().catch(() => {});
   }
 
   /** Main agent for a new session: the configured one, or the less-used provider when balancing. */

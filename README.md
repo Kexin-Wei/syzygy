@@ -13,7 +13,7 @@ Choices are stored as *families* (`sol`, `opus`), not model ids. Each session st
 
 ```bash
 bun install
-bun src/cli.tsx [project-dir] [--main codex|claude]
+bun src/cli.tsx [project-dir] [--main codex|claude] [-c|--resume]   # new chat; -c continues the last one
 bun link          # optional: puts `syzygy` on your PATH (~/.bun/bin)
 ```
 

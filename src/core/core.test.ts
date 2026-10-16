@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { formatTokens, pickMain, usageNote } from "./core.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Store } from "../store/db.ts";
+import { Core, formatTokens, pickMain, usageNote } from "./core.ts";
 
 test("formats token counts", () => {
   expect(formatTokens(950)).toBe("950");
@@ -24,4 +28,25 @@ test("note turns into a rule past a 2x gap", () => {
   expect(usageNote("codex", "claude", { codex: 0, claude: 400_000 })).toContain("do the work yourself");
   expect(usageNote("codex", "claude", { codex: 300_000, claude: 200_000 })).not.toContain("Rule");
   expect(usageNote("codex", "claude", { codex: 60_000, claude: 0 })).not.toContain("Rule"); // below the floor
+});
+
+test("startup opens a new chat unless resuming; untouched chats are reused", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "syzygy-core-"));
+  const core = new Core(new Store(":memory:"));
+  try {
+    await core.openProject(dir, { resume: false });
+    const first = core.session.id;
+    await core.openProject(dir, { resume: false });
+    expect(core.session.id).toBe(first); // still empty: reuse instead of piling up blank chats
+    core.store.addMessage(first, "user", "hi");
+    await core.openProject(dir, { resume: false });
+    expect(core.session.id).not.toBe(first);
+    const second = core.session.id;
+    core.store.addMessage(second, "user", "hello");
+    await core.openProject(dir, { resume: false }); // leaves a new empty session on top
+    await core.openProject(dir, { resume: true });
+    expect(core.session.id).toBe(second);
+  } finally {
+    await core.shutdown();
+  }
 });

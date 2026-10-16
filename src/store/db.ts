@@ -200,7 +200,7 @@ export class Store {
 
   listSessions(projectId: number, archived = false): SessionRow[] {
     return this.db
-      .query<any, [number, number]>("SELECT * FROM sessions WHERE project_id = ? AND archived = ? ORDER BY updated_at DESC")
+      .query<any, [number, number]>("SELECT * FROM sessions WHERE project_id = ? AND archived = ? ORDER BY updated_at DESC, rowid DESC")
       .all(projectId, archived ? 1 : 0)
       .map(toSession);
   }

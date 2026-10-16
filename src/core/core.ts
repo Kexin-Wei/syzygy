@@ -154,11 +154,18 @@ export class Core extends EventEmitter<CoreEvents> {
 
   // --- projects & sessions ---
 
-  async openProject(path: string): Promise<void> {
+  /** Open a project on its latest session (`resume`), or on a new one; an untouched latest session is reused either way. */
+  async openProject(path: string, { resume = true }: { resume?: boolean } = {}): Promise<void> {
     await this.closeAgents();
     this.project = this.store.openProject(path);
-    const latest = this.store.listSessions(this.project.id)[0];
-    this.setSession(latest ?? this.store.createSession(this.project.id, this.defaultMain()));
+    const sessions = this.store.listSessions(this.project.id);
+    const latest = sessions[0];
+    // a fresh launch leaves an empty session behind; resume means the last real conversation
+    const last = sessions.find((s) => this.store.messages(s.id).length > 0) ?? latest;
+    if (last && resume) return this.setSession(last);
+    const main = this.defaultMain();
+    const empty = latest && latest.mainProvider === main && this.store.messages(latest.id).length === 0;
+    this.setSession(empty ? latest : this.store.createSession(this.project.id, main));
   }
 
   async newSession(mainProvider?: ProviderId): Promise<void> {

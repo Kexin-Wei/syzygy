@@ -4,11 +4,12 @@ import { Core } from "./core/core.ts";
 import type { ProviderId } from "./core/types.ts";
 import { App } from "./tui/App.tsx";
 
-const USAGE = `syzygy [project-dir] [--main codex|claude]
+const USAGE = `syzygy [project-dir] [--main codex|claude] [-c|--resume]
 syzygy doctor          check this machine's setup
 
 Codex and Claude Code in one terminal: one main agent talks to you and
-delegates to the other. Type /help inside for commands.`;
+delegates to the other. Starts a new chat; -c/--resume continues the
+project's last one. Type /help inside for commands.`;
 
 const args = process.argv.slice(2);
 if (args.includes("-h") || args.includes("--help")) {
@@ -19,6 +20,8 @@ if (args[0] === "doctor") {
   const { doctor } = await import("./doctor.ts");
   process.exit(await doctor());
 }
+const resume = args.includes("-c") || args.includes("--resume");
+for (const f of ["-c", "--resume"]) while (args.includes(f)) args.splice(args.indexOf(f), 1);
 let main: ProviderId | undefined;
 const mi = args.indexOf("--main");
 if (mi >= 0) {
@@ -31,7 +34,7 @@ if (mi >= 0) {
 }
 
 const core = new Core();
-await core.openProject(args[0] ?? process.cwd());
+await core.openProject(args[0] ?? process.cwd(), { resume });
 if (main && main !== core.session.mainProvider) {
   await core.updateSettings({ mainProvider: main }, "project");
   await core.newSession(main);

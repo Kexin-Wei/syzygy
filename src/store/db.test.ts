@@ -1,6 +1,15 @@
 import { expect, test } from "bun:test";
 import { Store } from "./db.ts";
 
+test("usage totals per provider within a window", () => {
+  const s = new Store(":memory:");
+  s.addUsage("codex", 100, 1000);
+  s.addUsage("codex", 50, 5000);
+  s.addUsage("claude", 70, 6000);
+  expect(s.usageSince(0)).toEqual({ codex: 150, claude: 70 });
+  expect(s.usageSince(4000)).toEqual({ codex: 50, claude: 70 });
+});
+
 test("projects, sessions, archive, transcript, settings", () => {
   const s = new Store(":memory:");
   const p = s.openProject("/tmp/demo");

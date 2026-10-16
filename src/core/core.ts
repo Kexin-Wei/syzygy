@@ -24,6 +24,7 @@ export interface CoreEvents {
   status: [string];
   session: [SessionRow];
   busy: [boolean];
+  usage: [Record<ProviderId, number>];
 }
 
 type ToolResult = { text: string; isError?: boolean };
@@ -31,7 +32,26 @@ type ToolResult = { text: string; isError?: boolean };
 const PROVIDER_NAME: Record<ProviderId, string> = { codex: "Codex", claude: "Claude Code" };
 const CLAUDE_FAMILIES = /^(opus|sonnet|haiku|fable|claude-)/i;
 
-function mainInstructions(sub: ModelIntent, projectPath: string): string {
+/** Subscription limits reset on rolling windows; balance over the same span. */
+export const USAGE_WINDOW_MS = 5 * 60 * 60 * 1000;
+
+export function formatTokens(n: number): string {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+}
+
+/** Per-turn note that lets the main agent weigh doing work itself against delegating. */
+export function usageNote(main: ProviderId, sub: ProviderId, usage: Record<ProviderId, number>): string {
+  return `[syzygy] tokens used in the last 5h: ${PROVIDER_NAME[main]} (you) ${formatTokens(usage[main])}, ${PROVIDER_NAME[sub]} (subagent) ${formatTokens(usage[sub])}.`;
+}
+
+function mainInstructions(main: ProviderId, sub: ModelIntent, projectPath: string): string {
+  const balance =
+    sub.provider === main
+      ? ""
+      : `\nThe user has subscriptions to both ${PROVIDER_NAME[main]} and ${PROVIDER_NAME[sub.provider]} and wants token usage shared between them. ` +
+        `Each user message ends with a [syzygy] note giving recent usage for both. When you have used clearly more, hand self-contained ` +
+        `multi-step work (implementation, edits across files, scripted rewrites, builds and checks) to the subagent and keep planning and ` +
+        `checking for yourself; when the subagent has used more, do more yourself. Quick one-step tasks and answers stay with you either way.`;
   return (
     `You are the main agent in Syzygy: you talk to the user and can hand work to a subagent ` +
     `(${PROVIDER_NAME[sub.provider]}, ${sub.family} at ${sub.effort} effort) through the syzygy MCP tools.\n` +
@@ -40,6 +60,7 @@ function mainInstructions(sub: ModelIntent, projectPath: string): string {
     `Delegate when the user asks you to involve the subagent, or when a self-contained piece of work (implementation, review, ` +
     `investigation) benefits from a second agent. Give complete instructions: it cannot see this conversation. ` +
     `Say which files it may change. You stay responsible for the result: check its report before relying on it.` +
+    balance +
     memoryBlock(projectPath)
   );
 }
@@ -175,7 +196,7 @@ export class Core extends EventEmitter<CoreEvents> {
       resolved,
       resumeId: this.session.mainSessionId ?? undefined,
       mcpServers: [this.bridge.mcpSpec("main")],
-      instructions: mainInstructions(settings.sub[provider], this.project.path),
+      instructions: mainInstructions(provider, settings.sub[provider], this.project.path),
       approvals: settings.approvals,
       onApproval: (req) => this.askApproval(req, "main"),
     });
@@ -199,8 +220,11 @@ export class Core extends EventEmitter<CoreEvents> {
     let failed = false;
     try {
       const main = await this.ensureMain();
-      for await (const ev of main.send(input)) {
+      const sub = this.settings.sub[main.provider].provider;
+      const toMain: UserInput[] = sub === main.provider ? input : [...input, { type: "text", text: usageNote(main.provider, sub, this.usage()) }];
+      for await (const ev of main.send(toMain)) {
         const current = this.session.id === sid;
+        if (ev.kind === "usage") this.recordUsage(main.provider, ev.tokens);
         if (ev.kind === "session" && current) this.mainResolved = { ...this.mainResolved!, model: ev.model };
         if (ev.kind === "turn-complete") {
           failed = ev.status === "failed";
@@ -223,6 +247,16 @@ export class Core extends EventEmitter<CoreEvents> {
       // a failed turn may mean a dead process; restart (with resume) on the next turn
       if (failed || this.restartPending) await this.dropMain();
     }
+  }
+
+  /** Tokens per provider over the balancing window, across all projects. */
+  usage(): Record<ProviderId, number> {
+    return this.store.usageSince(Date.now() - USAGE_WINDOW_MS);
+  }
+
+  private recordUsage(provider: ProviderId, tokens: number): void {
+    this.store.addUsage(provider, tokens);
+    this.emit("usage", this.usage());
   }
 
   async interrupt(): Promise<void> {
@@ -350,6 +384,7 @@ export class Core extends EventEmitter<CoreEvents> {
     try {
       for await (const ev of session.send(input)) {
         if (visible()) this.emit("sub", row.id, ev);
+        if (ev.kind === "usage") this.recordUsage(row.provider, ev.tokens);
         if (ev.kind === "turn-complete") final = ev;
       }
     } catch (e) {

@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS subtasks (
   task TEXT NOT NULL, status TEXT NOT NULL, result TEXT, created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS usage (provider TEXT NOT NULL, tokens INTEGER NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS usage_at ON usage(at);
 CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project_id, updated_at);
 `;
@@ -139,6 +141,21 @@ export class Store {
     const row = this.db.query<{ settings: string }, [number]>("SELECT settings FROM projects WHERE id = ?").get(projectId);
     const merged = { ...(row ? JSON.parse(row.settings) : {}), ...patch };
     this.db.query("UPDATE projects SET settings = ? WHERE id = ?").run(JSON.stringify(merged), projectId);
+  }
+
+  // --- token usage ---
+
+  addUsage(provider: ProviderId, tokens: number, at = now()): void {
+    this.db.query("INSERT INTO usage (provider, tokens, at) VALUES (?, ?, ?)").run(provider, tokens, at);
+  }
+
+  /** Tokens per provider since `since` (ms epoch), across all projects and sessions. */
+  usageSince(since: number): Record<ProviderId, number> {
+    const out: Record<ProviderId, number> = { codex: 0, claude: 0 };
+    for (const r of this.db.query<{ provider: ProviderId; n: number }, [number]>("SELECT provider, SUM(tokens) AS n FROM usage WHERE at >= ? GROUP BY provider").all(since)) {
+      out[r.provider] = r.n;
+    }
+    return out;
   }
 
   // --- projects ---

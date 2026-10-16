@@ -42,10 +42,36 @@ function toCodexInput(input: UserInput[]): CodexUserInput[] {
   });
 }
 
+/** `/usr/bin/zsh -lc "cmd"` → `cmd`, so the transcript shows the command rather than the shell wrapper. */
+export function unwrapShell(command: string): string {
+  const m = command.match(/^\S*?\b(?:ba|z)?sh -l?c (.+)$/s);
+  if (!m) return command;
+  // undo one level of POSIX quoting: '…' literal, "…" with \-escapes, bare words
+  let out = "";
+  const s = m[1]!;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]!;
+    if (c === "'") {
+      const end = s.indexOf("'", i + 1);
+      if (end < 0) return command;
+      out += s.slice(i + 1, end);
+      i = end;
+    } else if (c === '"') {
+      for (i++; i < s.length && s[i] !== '"'; i++) {
+        if (s[i] === "\\" && '"\\$`'.includes(s[i + 1] ?? "")) i++;
+        out += s[i];
+      }
+      if (i >= s.length) return command;
+    } else if (c === "\\") out += s[++i] ?? "";
+    else out += c;
+  }
+  return out;
+}
+
 function describeItem(item: any): { name: string; detail: string } | undefined {
   switch (item.type) {
     case "commandExecution":
-      return { name: "shell", detail: String(item.command ?? "") };
+      return { name: "shell", detail: unwrapShell(String(item.command ?? "")) };
     case "fileChange":
       return { name: "edit", detail: (item.changes ?? []).map((c: any) => c.path).join(", ") };
     case "mcpToolCall":
@@ -93,6 +119,12 @@ class CodexSession implements AgentSession {
       if (method === EXIT_METHOD) return finish({ kind: "turn-complete", text: messages.at(-1) ?? "", status: "failed", error: p.message });
       if (p?.threadId !== this.sessionId) return;
       if (method === "item/agentMessage/delta") q.push({ kind: "text-delta", text: p.delta });
+      else if (method === "thread/tokenUsage/updated") {
+        // `last` is the latest model response; summing them gives this turn's usage
+        const l = p.tokenUsage?.last;
+        const tokens = l ? l.inputTokens + l.outputTokens : 0; // inputTokens already includes cached
+        if (tokens > 0) q.push({ kind: "usage", tokens });
+      }
       else if (method === "item/started" || method === "item/completed") {
         if (method === "item/completed" && p.item.type === "agentMessage") messages.push(p.item.text);
         const d = describeItem(p.item);

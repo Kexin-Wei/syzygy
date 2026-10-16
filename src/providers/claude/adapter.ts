@@ -119,6 +119,9 @@ class ClaudeSession implements AgentSession {
       }
     } else if (m.type === "result") {
       if (m.session_id) this.sessionId = m.session_id;
+      const u = m.usage ?? {};
+      const tokens = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.output_tokens ?? 0);
+      if (tokens) cur?.q.push({ kind: "usage", tokens });
       const status = m.subtype === "success" ? "completed" : m.subtype === "error_during_execution" && m.is_error === false ? "interrupted" : "failed";
       this.finish({ status, text: typeof m.result === "string" ? m.result : undefined, ...(status === "failed" ? { error: m.subtype } : {}) });
     }

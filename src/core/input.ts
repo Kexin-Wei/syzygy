@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { UserInput } from "./types.ts";
@@ -34,31 +34,87 @@ export function parseInput(text: string, cwd: string): { input: UserInput[]; att
   return { input: [{ type: "text", text }, ...attachments.map(attachmentFor)], attachments };
 }
 
-/** Complete the trailing @token in `text`; returns the new text or null. */
-export function completePath(text: string, cwd: string): { text: string; options: string[] } | null {
-  const m = text.match(/@(\S*)$/);
+/** Live suggestions for a trailing @token: each item is a replacement for `partial` (dirs end in "/"). */
+export function suggestPaths(text: string, cwd: string, limit = 8): { partial: string; items: string[] } | null {
+  const m = text.match(/(?:^|\s)@(\S*)$/);
   if (!m) return null;
   const partial = m[1] ?? "";
+  const atDir = partial === "" || partial.endsWith("/");
   const abs = expand(partial || "./", cwd);
-  const dir = partial.endsWith("/") || partial === "" ? abs : dirname(abs);
-  const prefix = partial.endsWith("/") || partial === "" ? "" : abs.slice(dir.length + 1);
-  let names: string[];
+  const dir = atDir ? abs : dirname(abs);
+  const prefix = atDir ? "" : abs.slice(dir.length + 1);
+  const base = atDir ? partial : partial.slice(0, partial.length - prefix.length);
+  let items: string[] = [];
   try {
-    names = readdirSync(dir).filter((n) => n.startsWith(prefix) && (prefix.startsWith(".") || !n.startsWith(".")));
-  } catch {
-    return null;
+    items = readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.name.toLowerCase().startsWith(prefix.toLowerCase()) && (prefix.startsWith(".") || !d.name.startsWith(".")))
+      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+      .map((d) => base + d.name + (d.isDirectory() ? "/" : ""));
+  } catch {}
+  // a typed name also searches the whole project, so @main finds src/main.ts
+  if (!atDir && !/^[~/]|^file:/.test(partial)) {
+    for (const p of rankPaths(projectPaths(cwd), partial)) if (!items.includes(p)) items.push(p);
   }
-  if (!names.length) return null;
-  let common = names[0]!;
-  for (const n of names) while (!n.startsWith(common)) common = common.slice(0, -1);
-  const base = partial.endsWith("/") || partial === "" ? partial : partial.slice(0, partial.length - prefix.length);
-  let completed = base + common;
-  if (names.length === 1) {
+  items = items.slice(0, limit);
+  return items.length ? { partial, items } : null;
+}
+
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "target", "__pycache__", ".venv", "venv"]);
+const MAX_PATHS = 20000;
+const pathCache = new Map<string, { at: number; paths: string[] }>();
+
+/** Every non-hidden file and dir under `cwd` (relative, dirs end in "/"), cached briefly between keystrokes. */
+export function projectPaths(cwd: string): string[] {
+  const hit = pathCache.get(cwd);
+  if (hit && Date.now() - hit.at < 5000) return hit.paths;
+  const paths: string[] = [];
+  const walk = (rel: string) => {
+    let entries;
     try {
-      if (statSync(join(dir, common)).isDirectory()) completed += "/";
-    } catch {}
+      entries = readdirSync(join(cwd, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of entries) {
+      if (paths.length >= MAX_PATHS) return;
+      if (d.name.startsWith(".") || (d.isDirectory() && SKIP_DIRS.has(d.name))) continue;
+      const p = rel + d.name;
+      if (d.isDirectory()) {
+        paths.push(p + "/");
+        walk(p + "/");
+      } else paths.push(p);
+    }
+  };
+  walk("");
+  pathCache.set(cwd, { at: Date.now(), paths });
+  return paths;
+}
+
+/** Rank paths against a query: basename prefix, then path substring, then in-order fuzzy match. */
+export function rankPaths(paths: string[], query: string): string[] {
+  const q = query.toLowerCase();
+  const scored: [number, string][] = [];
+  for (const p of paths) {
+    const lp = p.toLowerCase();
+    const name = lp.replace(/\/$/, "").split("/").pop()!;
+    let score: number;
+    if (name.startsWith(q)) score = 0;
+    else if (name.includes(q)) score = 1;
+    else if (lp.includes(q)) score = 2;
+    else {
+      let i = 0;
+      for (const c of lp) if (c === q[i]) i++;
+      if (i < q.length) continue;
+      score = 3;
+    }
+    scored.push([score, p]);
   }
-  return { text: text.slice(0, text.length - partial.length) + completed, options: names.length > 1 ? names.slice(0, 20) : [] };
+  return scored.sort((a, b) => a[0] - b[0] || a[1].length - b[1].length || a[1].localeCompare(b[1])).map(([, p]) => p);
+}
+
+/** Replace the trailing @partial in `text` with `item`. */
+export function applySuggestion(text: string, partial: string, item: string): string {
+  return text.slice(0, text.length - partial.length) + item;
 }
 
 export type ClipboardTool = "wl-paste" | "xclip" | "pngpaste" | "osascript";

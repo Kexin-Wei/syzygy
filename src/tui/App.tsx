@@ -1,8 +1,8 @@
 import { Box, Text, useApp, useInput, usePaste, useStdout } from "ink";
 import TextInput from "ink-text-input";
-import { useEffect, useRef, useState } from "react";
-import type { Core, PendingApproval } from "../core/core.ts";
-import { completePath, parseInput } from "../core/input.ts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { type Core, formatTokens, type PendingApproval } from "../core/core.ts";
+import { applySuggestion, parseInput, suggestPaths } from "../core/input.ts";
 import { memoryPath, readMemory } from "../core/memory.ts";
 import type { ProviderId, UserInput } from "../core/types.ts";
 import type { MessageRow, SessionRow } from "../store/db.ts";
@@ -24,7 +24,7 @@ const HELP = `Commands
   /remember <note>      add to shared project memory      /memory    show project memory
   /help  /quit
 Keys
-  Enter send · Tab complete @path (or toggle subagent panel) · Esc interrupt (denies pending approvals) · Ctrl+C quit
+  Enter send · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Esc interrupt (denies pending approvals) · Ctrl+C quit
   Approval prompts: y allow · n deny
 Attach files with @path, @"path with spaces", or drag a file into the terminal.`;
 
@@ -60,6 +60,7 @@ export function App({ core }: { core: Core }) {
   const [mode, setMode] = useState<Mode>("chat");
   const [, setTick] = useState(0);
   const [status, setStatus] = useState("");
+  const [usage, setUsage] = useState(() => core.usage());
   const [model, setModel] = useState<string>(core.session.mainModel ?? "");
   const history = useRef<string[]>([]);
   const histIdx = useRef(-1);
@@ -69,6 +70,19 @@ export function App({ core }: { core: Core }) {
   const setInputText = (t: string) => {
     setInput(t);
     setInputKey((k) => k + 1); // remount so the cursor lands at the end
+  };
+  const [sel, setSel] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const sugg = useMemo(() => {
+    if (mode !== "chat" || dismissed === input) return null;
+    const s = suggestPaths(input, core.project.path);
+    return s && !(s.items.length === 1 && s.items[0] === s.partial) ? s : null;
+  }, [input, dismissed, mode, core.project.path]);
+  useEffect(() => setSel(0), [input]);
+  const acceptSuggestion = () => {
+    if (!sugg) return;
+    const item = sugg.items[Math.min(sel, sugg.items.length - 1)]!;
+    setInputText(applySuggestion(input, sugg.partial, item) + (item.endsWith("/") ? "" : " "));
   };
 
   useEffect(() => {
@@ -132,6 +146,7 @@ export function App({ core }: { core: Core }) {
     core.on("approval", onApproval);
     core.on("approval-resolved", onApprovalResolved);
     core.on("status", onStatus);
+    core.on("usage", setUsage);
     core.on("busy", onBusy);
     core.on("session", onSession);
     return () => {
@@ -142,6 +157,7 @@ export function App({ core }: { core: Core }) {
       core.off("approval", onApproval);
       core.off("approval-resolved", onApprovalResolved);
       core.off("status", onStatus);
+      core.off("usage", setUsage);
       core.off("busy", onBusy);
       core.off("session", onSession);
     };
@@ -208,6 +224,7 @@ export function App({ core }: { core: Core }) {
   function submit(text: string) {
     const line = text.trim();
     if (!line && !pending.length) return;
+    if (sugg && sugg.items[Math.min(sel, sugg.items.length - 1)] !== sugg.partial) return acceptSuggestion();
     setInputText("");
     if (line) history.current.unshift(line);
     histIdx.current = -1;
@@ -248,18 +265,23 @@ export function App({ core }: { core: Core }) {
         }
         return;
       }
+      if (key.tab && key.shift) {
+        const next = core.settings.approvals === "ask" ? "auto" : "ask";
+        void run(core.updateSettings({ approvals: next }));
+        return setStatus(`approvals: ${next}${busy ? " (from next turn)" : ""}`);
+      }
+      if (sugg) {
+        const n = sugg.items.length;
+        if (key.upArrow) return setSel((s) => (Math.min(s, n - 1) - 1 + n) % n);
+        if (key.downArrow) return setSel((s) => (Math.min(s, n - 1) + 1) % n);
+        if (key.tab) return acceptSuggestion();
+        if (key.escape) return setDismissed(input);
+      }
       if (key.escape && busy) {
         void run(core.interrupt());
         return sys("interrupting…");
       }
-      if (key.tab) {
-        const c = completePath(input, core.project.path);
-        if (c) {
-          setInputText(c.text);
-          if (c.options.length) setStatus(c.options.join("  "));
-        } else setShowSubs((v) => !v);
-        return;
-      }
+      if (key.tab) return setShowSubs((v) => !v);
       if (key.upArrow && history.current.length) {
         histIdx.current = Math.min(history.current.length - 1, histIdx.current + 1);
         return setInputText(history.current[histIdx.current]!);
@@ -372,13 +394,23 @@ export function App({ core }: { core: Core }) {
               placeholder={busy ? "working… (Esc to interrupt)" : "message, @file, /help"}
             />
           </Box>
+          {sugg ? (
+            <Box flexDirection="column" paddingX={2}>
+              {sugg.items.map((it, i) => (
+                <Text key={it} color={i === Math.min(sel, sugg.items.length - 1) ? "cyan" : undefined} dimColor={i !== Math.min(sel, sugg.items.length - 1)}>
+                  {i === Math.min(sel, sugg.items.length - 1) ? "› " : "  "}
+                  {it}
+                </Text>
+              ))}
+            </Box>
+          ) : null}
         </Box>
       ) : null}
       <Box justifyContent="space-between">
         <Text dimColor wrap="truncate-end">
           {core.project.name} · <Text color={PROVIDER_COLOR[session.mainProvider]}>{session.mainProvider}</Text> {model || mainIntent.family}/{mainIntent.effort}
           {" → sub "}
-          <Text color={PROVIDER_COLOR[subIntent.provider]}>{subIntent.provider}</Text> {subIntent.family}/{subIntent.effort} · approvals {settings.approvals}
+          <Text color={PROVIDER_COLOR[subIntent.provider]}>{subIntent.provider}</Text> {subIntent.family}/{subIntent.effort} · approvals {settings.approvals} · 5h codex {formatTokens(usage.codex)} claude {formatTokens(usage.claude)}
         </Text>
         <Text dimColor wrap="truncate-start">
           {status}

@@ -38,6 +38,8 @@ export type AgentEvent =
   | { kind: "session"; sessionId: string; model: string }
   | { kind: "text-delta"; text: string }
   | { kind: "tool"; name: string; detail: string; status: "started" | "completed" }
+  /** tokens processed by one model response or turn: all input (cached included) plus output */
+  | { kind: "usage"; tokens: number }
   | { kind: "turn-complete"; text: string; status: "completed" | "interrupted" | "failed"; error?: string };
 
 export type ApprovalRequest = {

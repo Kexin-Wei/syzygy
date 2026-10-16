@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { completePath, parseInput } from "./input.ts";
+import { applySuggestion, parseInput, suggestPaths } from "./input.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "syzygy-input-"));
 mkdirSync(join(dir, "src"));
@@ -23,8 +23,12 @@ test("folders attach as files", () => {
   expect(parseInput("see @src/", dir).input[1]).toEqual({ type: "file", path: join(dir, "src") });
 });
 
-test("completes trailing @token", () => {
-  expect(completePath("open @sr", dir)?.text).toBe("open @src/");
-  expect(completePath("open @src/m", dir)?.text).toBe("open @src/main.ts");
-  expect(completePath("no token", dir)).toBeNull();
+test("suggests paths for trailing @token", () => {
+  expect(suggestPaths("open @", dir)?.items).toEqual(["src/", "README.md", "shot one.png"]);
+  expect(suggestPaths("open @src/", dir)?.items).toEqual(["src/main.ts"]);
+  expect(suggestPaths("open @re", dir)?.items).toEqual(["README.md"]);
+  expect(suggestPaths("mail a@b", dir)).toBeNull();
+  expect(suggestPaths("open @main", dir)?.items).toEqual(["src/main.ts"]);
+  expect(suggestPaths("open @smts", dir)?.items).toEqual(["src/main.ts"]);
+  expect(applySuggestion("open @sr", "sr", "src/")).toBe("open @src/");
 });

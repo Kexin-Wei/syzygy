@@ -309,6 +309,38 @@ export class Core extends EventEmitter<CoreEvents> {
     return { failed: false, deferredDeath: false };
   }
 
+  /** Summarize the conversation to free up context. Returns a short status line for the UI. */
+  async compact(): Promise<string> {
+    if (this.busy) throw new Error("agent is busy");
+    const main = await this.ensureMain();
+    if (!main.compact) return `${PROVIDER_NAME[main.provider]} has no manual compaction`;
+    this.setBusy(true);
+    let markDone!: () => void;
+    this.turnDone = new Promise((r) => (markDone = r));
+    const sid = this.session.id;
+    let failed = false;
+    let text = "";
+    try {
+      for await (const ev of main.compact()) {
+        if (ev.kind === "account-usage") this.setUsage(main.provider, ev.usage);
+        else if (ev.kind === "turn-complete") {
+          failed = ev.status === "failed";
+          text = failed ? `compaction failed: ${ev.error ?? "unknown"}` : ev.text.trim() || "context compacted";
+        }
+      }
+    } catch (e) {
+      failed = true;
+      text = `compaction failed: ${String((e as Error).message ?? e)}`;
+    } finally {
+      this.setBusy(false);
+      markDone();
+      if (failed || this.restartPending) await this.dropMain();
+      void this.refreshUsage(60_000);
+    }
+    this.store.addMessage(sid, "system", text);
+    return text;
+  }
+
   /** Close the current main session now (even mid-turn) so the next `ensureMain` rebuilds it on a fresh backend. */
   private async resetMain(): Promise<void> {
     const m = this.main;

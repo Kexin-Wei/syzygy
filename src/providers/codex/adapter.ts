@@ -112,6 +112,21 @@ class CodexSession implements AgentSession {
   ) {}
 
   send(input: UserInput[]): AsyncIterable<AgentEvent> {
+    return this.runTurn(async () => {
+      const r: any = await this.rpc.request("turn/start", { threadId: this.sessionId, input: toCodexInput(input), model: this.model, effort: this.effort });
+      return r.turn.id as string;
+    });
+  }
+
+  /** Summarize the conversation so far to free up context; runs as a turn and ends with a "compacted" note. */
+  compact(): AsyncIterable<AgentEvent> {
+    return this.runTurn(async () => {
+      await this.rpc.request("thread/compact/start", { threadId: this.sessionId });
+      return undefined; // compaction has no turn id to interrupt
+    });
+  }
+
+  private runTurn(start: () => Promise<string | undefined>): AsyncIterable<AgentEvent> {
     if (this.finishTurn) throw new Error("a turn is already in progress");
     const q = new AsyncQueue<AgentEvent>();
     const messages: string[] = [];
@@ -147,12 +162,11 @@ class CodexSession implements AgentSession {
       }
     });
 
-    this.rpc
-      .request("turn/start", { threadId: this.sessionId, input: toCodexInput(input), model: this.model, effort: this.effort })
-      .then((r: any) => {
+    start()
+      .then((turnId) => {
         if (done) return;
-        this.activeTurnId = r.turn.id;
-        if (this.interruptRequested) void this.interrupt();
+        this.activeTurnId = turnId;
+        if (turnId && this.interruptRequested) void this.interrupt();
       })
       .catch((e: Error) => finish({ kind: "turn-complete", text: "", status: "failed", error: e.message }));
     return q;

@@ -78,6 +78,8 @@ export interface AgentSession {
   /** provider-native session/thread id; may change after the first turn (claude resume forks) */
   readonly sessionId: string;
   send(input: UserInput[]): AsyncIterable<AgentEvent>;
+  /** summarize the conversation to free context; omitted when the backend has no manual compaction */
+  compact?(): AsyncIterable<AgentEvent>;
   interrupt(): Promise<void>;
   close(): Promise<void>;
 }

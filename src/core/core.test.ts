@@ -125,3 +125,42 @@ test("shows the failure when the backend dies again on the retry", async () => {
   expect(completes[0]).toMatchObject({ status: "failed" });
   await core.shutdown();
 });
+
+test("compact runs the backend's compaction and records a note", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "syzygy-compact-"));
+  const core = new Core(new Store(":memory:"));
+  await core.openProject(dir, { resume: false });
+  const anyCore = core as any;
+  anyCore.resolve = async () => ({ provider: "codex", model: "gpt-x", effort: "low" });
+  anyCore.adapter = async () => ({
+    startSession: async () =>
+      ({
+        provider: "codex",
+        sessionId: "t",
+        async *send() {},
+        async *compact(): AsyncGenerator<AgentEvent> {
+          yield { kind: "turn-complete", text: "", status: "completed" };
+        },
+        async interrupt() {},
+        async close() {},
+      }) as unknown as AgentSession,
+  });
+  const r = await core.compact();
+  expect(r).toBe("context compacted");
+  const sysMsgs = core.store.messages(core.session.id).filter((m) => m.role === "system");
+  expect(sysMsgs.at(-1)!.text).toBe("context compacted");
+  await core.shutdown();
+});
+
+test("compact reports when the backend has no manual compaction", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "syzygy-nocompact-"));
+  const core = new Core(new Store(":memory:"));
+  await core.openProject(dir, { resume: false });
+  const anyCore = core as any;
+  anyCore.resolve = async () => ({ provider: "codex", model: "gpt-x", effort: "low" });
+  anyCore.adapter = async () => ({
+    startSession: async () => ({ provider: "codex", sessionId: "t", async *send() {}, async interrupt() {}, async close() {} }) as unknown as AgentSession,
+  });
+  expect(await core.compact()).toContain("no manual compaction");
+  await core.shutdown();
+});

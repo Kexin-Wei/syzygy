@@ -119,6 +119,10 @@ class ClaudeSession implements AgentSession {
     return q;
   }
 
+  compact(): AsyncIterable<AgentEvent> {
+    return this.send([{ type: "text", text: "/compact" }]);
+  }
+
   async interrupt(): Promise<void> {
     if (this.current) this.write({ type: "control_request", request_id: crypto.randomUUID(), request: { subtype: "interrupt" } });
   }

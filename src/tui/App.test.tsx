@@ -26,7 +26,13 @@ function fakeCore() {
     store: { messages: () => [] },
     usage: () => ({ codex: null, claude: null }),
     busy: false,
-    async interrupt() {},
+    async interrupt() {
+      // a real turn ends on interrupt, flipping busy off (which flushes the queue)
+      if (core.busy) {
+        core.busy = false;
+        core.emit("busy", false);
+      }
+    },
     async updateSettings(patch: Partial<Settings>) {
       settings = { ...settings, ...patch };
     },
@@ -157,6 +163,23 @@ test("messages sent while busy are queued and go out when the turn ends", async 
   unmount();
 });
 
+test("Ctrl+F interrupts and sends a queued message immediately", async () => {
+  const { core, sent } = fakeCore();
+  const fake = core as unknown as { setBusy(b: boolean): void };
+  const { stdin, lastFrame, unmount } = render(<App core={core} />);
+  await tick();
+  fake.setBusy(true);
+  await type(stdin, "urgent", KEY.enter);
+  expect(sent).toHaveLength(0);
+  expect(lastFrame()).toContain("⏳ urgent");
+  await type(stdin, "\x06"); // Ctrl+F
+  await tick();
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toContainEqual({ type: "text", text: "urgent" });
+  expect(lastFrame()).not.toContain("⏳ urgent");
+  unmount();
+});
+
 test("Esc while busy returns queued messages to the input", async () => {
   const { core, sent } = fakeCore();
   const fake = core as unknown as { setBusy(b: boolean): void };
@@ -165,7 +188,7 @@ test("Esc while busy returns queued messages to the input", async () => {
   fake.setBusy(true);
   await type(stdin, "fix the tests", KEY.enter, KEY.esc);
   expect(lastFrame()).not.toContain("⏳");
-  expect(lastFrame()).toContain("… fix the tests"); // back in the input box (busy prompt)
+  expect(lastFrame()).toContain("› fix the tests"); // back in the input box, turn interrupted
   fake.setBusy(false);
   await tick();
   expect(sent).toHaveLength(0);

@@ -26,7 +26,7 @@ const HELP = `Commands
   /remember <note>      add to shared project memory      /memory    show project memory
   /help  /quit
 Keys
-  Enter send · Ctrl+O fold/unfold tool calls · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Esc interrupt (denies pending approvals) · Ctrl+C quit
+  Enter send · Ctrl+O fold/unfold tool calls · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Ctrl+F send queued now · Esc interrupt (denies pending approvals) · Ctrl+C quit
   Approval prompts: y allow · n deny
 Attach files with @path, @"path with spaces", or drag a file into the terminal.`;
 
@@ -296,6 +296,13 @@ export function App({ core }: { core: Core }) {
     sendNow(next);
   }, [busy]);
 
+  /** Interrupt the current turn so the next queued message goes out now instead of waiting for it to finish. */
+  function flushQueueNow() {
+    if (!queueRef.current.length) return;
+    void run(core.interrupt()); // busy→false fires the effect that sends the next queued message
+    sys("interrupting to send your queued message…");
+  }
+
   /** Esc: put queued messages back in the input instead of sending them after the interrupt. */
   function unqueue() {
     const q = queueRef.current;
@@ -368,6 +375,7 @@ export function App({ core }: { core: Core }) {
         if (key.tab) return acceptSuggestion();
         if (key.escape) return setDismissed(input);
       }
+      if (key.ctrl && ch === "f" && busy && queueRef.current.length) return flushQueueNow();
       if (key.escape && busy) {
         unqueue();
         void run(core.interrupt());
@@ -480,7 +488,7 @@ export function App({ core }: { core: Core }) {
               ⏳ {q}
             </Text>
           ))}
-          {queued.length ? <Text dimColor>{"   "}queued: sends when the agent finishes · Esc interrupts and returns it to the input</Text> : null}
+          {queued.length ? <Text dimColor>{"   "}queued: sends when the agent finishes · Ctrl+F sends now · Esc interrupts & returns it to the input</Text> : null}
           {pending.length ? (
             <Text dimColor>
               📎 {pending.map((p) => (p as { path: string }).path.split("/").pop()).join(", ")}

@@ -1,5 +1,4 @@
 import { Box, Text, useApp, useInput, usePaste, useStdout } from "ink";
-import TextInput from "ink-text-input";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type Core, formatPct, type PendingApproval } from "../core/core.ts";
 import { applySuggestion, parseInput, suggestPaths } from "../core/input.ts";
@@ -10,6 +9,7 @@ import { ListPicker } from "./ListPicker.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { type LiveSubView, SubPanel } from "./SubPanel.tsx";
 import { ago, PROVIDER_COLOR } from "./theme.ts";
+import { Input } from "./Input.tsx";
 import { type Entry, type ToolCall, ToolGroup, Transcript } from "./Transcript.tsx";
 
 type Mode = "chat" | "sessions" | "archived" | "projects" | "model";
@@ -27,7 +27,7 @@ const HELP = `Commands
   /remember <note>      add to shared project memory      /memory    show project memory
   /help  /quit
 Keys
-  Enter send · Ctrl+O fold/unfold tool calls · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Ctrl+F send queued now · Esc interrupt (denies pending approvals) · Ctrl+C quit
+  Enter send · Ctrl+O fold/unfold tool calls · @ files (↑↓ select, Tab/Enter accept) · Tab toggle subagent panel · Shift+Tab toggle approvals · Ctrl+F send queued now · ⌥←→/Ctrl+W/Ctrl+A/E word edit · Esc interrupt (denies pending approvals) · Ctrl+C quit
   Approval prompts: y allow · n deny
 Attach files with @path, @"path with spaces", or drag a file into the terminal.`;
 
@@ -512,7 +512,7 @@ export function App({ core }: { core: Core }) {
           ) : null}
           <Box borderStyle="round" borderColor={busy ? "gray" : "cyan"} paddingX={1}>
             <Text color="cyan">{busy ? "… " : "› "}</Text>
-            <TextInput
+            <Input
               key={inputKey}
               value={input}
               onChange={setInput}

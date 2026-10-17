@@ -1,7 +1,7 @@
 // Drive the TUI in a pseudo-terminal and dump what it printed.
 // Usage: bun scripts/tui-drive.ts <project-dir> <step>...   step = text | <wait:ms> | <enter> | <esc> | <tab> | <s-tab> | <down> | <up> | <right>
 const [dir, ...steps] = process.argv.slice(2);
-const KEYS: Record<string, string> = { "<enter>": "\r", "<esc>": "\x1b", "<tab>": "\t", "<s-tab>": "\x1b[Z", "<down>": "\x1b[B", "<up>": "\x1b[A", "<right>": "\x1b[C", "<ctrl-c>": "\x03", "<ctrl-f>": "\x06" };
+const KEYS: Record<string, string> = { "<enter>": "\r", "<esc>": "\x1b", "<tab>": "\t", "<s-tab>": "\x1b[Z", "<down>": "\x1b[B", "<up>": "\x1b[A", "<right>": "\x1b[C", "<ctrl-c>": "\x03", "<ctrl-f>": "\x06", "<ctrl-w>": "\x17", "<ctrl-a>": "\x01" };
 
 const cli = new URL("../src/cli.tsx", import.meta.url).pathname;
 const proc = Bun.spawn(["script", "-qfec", `stty cols 140 rows 50; bun ${cli} ${dir} ${process.env.SYZ_ARGS ?? ""}`, "/dev/null"], {

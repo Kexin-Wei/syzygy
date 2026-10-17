@@ -127,7 +127,7 @@ export function App({ core }: { core: Core }) {
       else if (ev.kind === "tool" && ev.status === "started") {
         flushText();
         if (ev.name.startsWith("mcp__syzygy") || ev.name === "syzygy.delegate") return; // shown as the subagent panel
-        toolsRef.current = [...toolsRef.current, { name: ev.name, detail: ev.detail }];
+        toolsRef.current = [...toolsRef.current, { name: ev.name, detail: ev.detail, summary: ev.summary }];
         setLiveTools(toolsRef.current);
       } else if (ev.kind === "turn-complete") {
         // the final part: whatever streamed since the last tool call, or the reported text if nothing streamed
@@ -143,12 +143,12 @@ export function App({ core }: { core: Core }) {
     };
     const onSubStart = (row: any) => setSubs((p) => ({ ...p, [row.id]: { row, tools: [], text: "" } }));
     const onSub = (id: string, ev: any) => {
-      if (ev.kind === "tool" && ev.status === "started") subToolsRef.current.set(id, [...(subToolsRef.current.get(id) ?? []), { name: ev.name, detail: ev.detail }]);
+      if (ev.kind === "tool" && ev.status === "started") subToolsRef.current.set(id, [...(subToolsRef.current.get(id) ?? []), { name: ev.name, detail: ev.detail, summary: ev.summary }]);
       setSubs((p) => {
         const s = p[id];
         if (!s) return p;
         if (ev.kind === "text-delta") return { ...p, [id]: { ...s, text: s.text + ev.text } };
-        if (ev.kind === "tool" && ev.status === "started") return { ...p, [id]: { ...s, tools: [...s.tools, { name: ev.name, detail: ev.detail }] } };
+        if (ev.kind === "tool" && ev.status === "started") return { ...p, [id]: { ...s, tools: [...s.tools, { name: ev.name, detail: ev.detail, summary: ev.summary }] } };
         return p;
       });
     };
@@ -296,10 +296,20 @@ export function App({ core }: { core: Core }) {
     sendNow(next);
   }, [busy]);
 
-  /** Interrupt the current turn so the next queued message goes out now instead of waiting for it to finish. */
+  /** Merge several queued messages into one: lines joined, all attachments kept. */
+  function combineQueued(items: Queued[]): Queued {
+    if (items.length === 1) return items[0]!;
+    const line = items.map((m) => m.line).join("\n\n");
+    const attachments = items.flatMap((m) => m.input.filter((i) => i.type !== "text"));
+    return { line, input: [{ type: "text", text: line }, ...attachments], pasted: items.flatMap((m) => m.pasted) };
+  }
+
+  /** Interrupt the current turn so the queued messages go out now, as one message, instead of waiting. */
   function flushQueueNow() {
     if (!queueRef.current.length) return;
-    void run(core.interrupt()); // busy→false fires the effect that sends the next queued message
+    queueRef.current = [combineQueued(queueRef.current)]; // the busy→false effect sends this single message
+    syncQueue();
+    void run(core.interrupt());
     sys("interrupting to send your queued message…");
   }
 

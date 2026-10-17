@@ -163,6 +163,38 @@ test("messages sent while busy are queued and go out when the turn ends", async 
   unmount();
 });
 
+test("Ctrl+F sends multiple queued messages as one combined message", async () => {
+  const { core, sent } = fakeCore();
+  const fake = core as unknown as { setBusy(b: boolean): void };
+  const { stdin, unmount } = render(<App core={core} />);
+  await tick();
+  fake.setBusy(true);
+  await type(stdin, "first part", KEY.enter, "second part", KEY.enter);
+  expect(sent).toHaveLength(0);
+  await type(stdin, "\x06"); // Ctrl+F
+  await tick();
+  expect(sent).toHaveLength(1); // one combined message, not two
+  expect(sent[0]).toContainEqual({ type: "text", text: "first part\n\nsecond part" });
+  unmount();
+});
+
+test("tool calls show the agent's description when folded, the command when expanded", async () => {
+  const { core } = fakeCore();
+  const { frames, stdin, unmount } = render(<App core={core} />);
+  await tick();
+  const ee = core as unknown as EventEmitter;
+  ee.emit("main", { kind: "tool", name: "Bash", detail: "git status --short --branch && git diff --check", summary: "Check working tree status", status: "started" });
+  ee.emit("main", { kind: "turn-complete", text: "done", status: "completed" });
+  await tick();
+  const folded = frames.join("\n");
+  expect(folded).toContain("Check working tree status");
+  expect(folded).not.toContain("git diff --check"); // command hidden while folded
+  await type(stdin, "\x0f"); // Ctrl+O
+  const expanded = frames.join("\n");
+  expect(expanded).toContain("git diff --check"); // full command on expand
+  unmount();
+});
+
 test("Ctrl+F interrupts and sends a queued message immediately", async () => {
   const { core, sent } = fakeCore();
   const fake = core as unknown as { setBusy(b: boolean): void };

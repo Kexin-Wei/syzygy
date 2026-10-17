@@ -37,7 +37,7 @@ export type UserInput =
 export type AgentEvent =
   | { kind: "session"; sessionId: string; model: string }
   | { kind: "text-delta"; text: string }
-  | { kind: "tool"; name: string; detail: string; status: "started" | "completed" }
+  | { kind: "tool"; name: string; detail: string; summary?: string; status: "started" | "completed" }
   /** the account's rate-limit usage, as reported alongside a model response */
   | { kind: "account-usage"; usage: AccountUsage }
   | { kind: "turn-complete"; text: string; status: "completed" | "interrupted" | "failed"; error?: string };

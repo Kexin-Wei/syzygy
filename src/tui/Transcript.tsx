@@ -27,6 +27,8 @@ export function UserMessage({ text, attachments }: { text: string; attachments?:
 export interface ToolCall {
   name: string;
   detail: string;
+  /** the agent's own one-line description of the call, shown instead of the raw command when folded */
+  summary?: string;
 }
 
 /** "Bash ×3, Read" */
@@ -58,7 +60,7 @@ export function ToolGroup({ items, expanded, indent = "  ", live = false }: { it
           <Text key={i} dimColor wrap="truncate-end">
             {indent}
             {items.length > 1 ? "  " : "⚙ "}
-            <Text bold>{t.name}</Text> {t.detail.replace(/\s+/g, " ")}
+            <Text bold>{t.name}</Text> {(t.summary || t.detail).replace(/\s+/g, " ")}
           </Text>
         ))}
         {!live && hidden ? <Text dimColor>{indent}  … {hidden} more · Ctrl+O to expand</Text> : null}
@@ -71,6 +73,7 @@ export function ToolGroup({ items, expanded, indent = "  ", live = false }: { it
         <Box key={i} flexDirection="column">
           <Text dimColor>
             {indent}⚙ <Text bold>{t.name}</Text>
+            {t.summary ? ` — ${t.summary.replace(/\s+/g, " ")}` : ""}
           </Text>
           <Box marginLeft={indent.length + 4}>
             <Text dimColor>{clip(t.detail, 30)}</Text>

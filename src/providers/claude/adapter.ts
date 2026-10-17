@@ -165,7 +165,10 @@ class ClaudeSession implements AgentSession {
       const text = m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
       if (text) cur?.messages.push(text);
       for (const c of m.message.content) {
-        if (c.type === "tool_use") cur?.q.push({ kind: "tool", name: c.name, detail: describeClaudeTool(c.name, c.input), status: "started" });
+        if (c.type === "tool_use") {
+          const summary = typeof c.input?.description === "string" ? c.input.description : undefined;
+          cur?.q.push({ kind: "tool", name: c.name, detail: describeClaudeTool(c.name, c.input), summary, status: "started" });
+        }
       }
     } else if (m.type === "rate_limit_event") {
       const usage = claudeUsage(m.rate_limit_info);

@@ -1,5 +1,6 @@
 import { Box, Static, Text } from "ink";
 import type { ProviderId } from "../core/types.ts";
+import { Markdown } from "./markdown.tsx";
 import { clip, PROVIDER_COLOR, PROVIDER_LABEL } from "./theme.ts";
 
 export type Entry =
@@ -99,7 +100,7 @@ function EntryView({ e, expanded }: { e: Entry; expanded: boolean }) {
           )}
           {e.text ? (
             <Box borderStyle="bold" borderTop={false} borderRight={false} borderBottom={false} borderColor={PROVIDER_COLOR[e.provider]} paddingLeft={1}>
-              <Text>{e.text}</Text>
+              <Markdown>{e.text}</Markdown>
             </Box>
           ) : null}
           {e.status && e.status !== "completed" ? <Text color="red">{"  "}[{e.status}]</Text> : null}
@@ -113,7 +114,7 @@ function EntryView({ e, expanded }: { e: Entry; expanded: boolean }) {
             {e.model ? ` ${e.model}` : ""}
             {e.status && e.status !== "completed" ? <Text color="red"> [{e.status}]</Text> : null}
           </Text>
-          <Text>{clip(e.text, 14)}</Text>
+          <Markdown>{clip(e.text, 30)}</Markdown>
         </Box>
       );
     case "tools":

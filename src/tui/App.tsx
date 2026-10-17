@@ -481,7 +481,7 @@ export function App({ core }: { core: Core }) {
               ◆ {session.mainProvider}
             </Text>
           )}
-          <Box paddingLeft={2}>
+          <Box borderStyle="bold" borderTop={false} borderRight={false} borderBottom={false} borderColor={PROVIDER_COLOR[session.mainProvider]} paddingLeft={1}>
             <Text>{streaming.trim()}</Text>
           </Box>
         </Box>

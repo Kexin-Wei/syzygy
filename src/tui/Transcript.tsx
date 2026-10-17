@@ -98,7 +98,7 @@ function EntryView({ e, expanded }: { e: Entry; expanded: boolean }) {
             </Text>
           )}
           {e.text ? (
-            <Box paddingLeft={2}>
+            <Box borderStyle="bold" borderTop={false} borderRight={false} borderBottom={false} borderColor={PROVIDER_COLOR[e.provider]} paddingLeft={1}>
               <Text>{e.text}</Text>
             </Box>
           ) : null}
